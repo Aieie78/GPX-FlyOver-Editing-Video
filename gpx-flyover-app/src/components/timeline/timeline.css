@@ -1,0 +1,369 @@
+.timeline {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.timeline-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.timeline-toolbar__spacer {
+  flex: 1 1 auto;
+}
+
+.timeline-toolbar__zoom-label {
+  font-size: 10px;
+  color: var(--text);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.timeline-toolbar__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-h);
+  cursor: pointer;
+}
+.timeline-toolbar__btn:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.timeline-toolbar__btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.timeline-toolbar__btn--active {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.timeline-inspector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.timeline-inspector__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.timeline-inspector__text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 12px;
+}
+.timeline-inspector__text-input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
+.timeline-inspector__volume {
+  width: 90px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.timeline-inspector__btn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-h);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+.timeline-inspector__btn:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.timeline-inspector__btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.timeline-inspector__btn--active {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.timeline-inspector__btn--solo.timeline-inspector__btn--active {
+  background: #ffcc00;
+  border-color: #ffcc00;
+  color: #141414;
+}
+
+.timeline-inspector__close {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.timeline-inspector__close:hover {
+  color: var(--text-h);
+}
+
+.timeline-ruler {
+  margin-bottom: 2px;
+}
+
+/* Contenitore SEMPRE overflow:hidden (mai una scrollbar nativa, a differenza delle altre righe):
+ * il righello è alto solo 14px, senza spazio per riservare l'altezza di una scrollbar senza
+ * farla finire sopra i numeri dei secondi. Il contenuto scorre via CSS transform (vedi
+ * TimelineRuler.tsx), pilotato dallo stesso scrollLeft condiviso — resta comunque sincronizzato
+ * scorrendo/zoomando da una qualunque delle altre righe (barra video, musica, foto). */
+.timeline-ruler__viewport {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.timeline-ruler__track {
+  position: relative;
+  min-width: 100%;
+  height: 18px;
+}
+
+/* Contenitore a tutta altezza (come prima di questo fix): il numero (figlio, top:0) resta
+ * posizionato in alto rispetto a QUESTO elemento — spostare in basso solo il contenitore (invece
+ * che la sola linea visibile) trascinava giù anche il numero, tagliandolo fuori dal viewport
+ * (overflow:hidden) e facendolo sparire del tutto. La riga della tacca è ora un elemento
+ * separato (::after) ancorato in basso, indipendente dalla posizione del numero. */
+.timeline-ruler__tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+.timeline-ruler__tick::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  height: 8px;
+  background: var(--border);
+}
+
+.timeline-ruler__label {
+  position: absolute;
+  top: 0;
+  left: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-h);
+  white-space: nowrap;
+}
+
+.timeline-ruler__label--end {
+  left: auto;
+  right: 1px;
+}
+
+.lane-row__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.lane-add {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #141414;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.lane-add:hover {
+  filter: brightness(1.12);
+}
+
+.lane-block {
+  position: absolute;
+  top: 3px;
+  height: 34px;
+  border-radius: 8px;
+  cursor: grab;
+  font-size: 10.5px;
+  color: #141414;
+  display: flex;
+  align-items: center;
+  user-select: none;
+  box-shadow: var(--lane-shadow);
+  transition: box-shadow 0.15s, filter 0.15s;
+}
+.lane-block:hover {
+  filter: brightness(1.05);
+  box-shadow: var(--shadow);
+}
+.lane-block:active {
+  cursor: grabbing;
+}
+
+.lane-block--music {
+  background: linear-gradient(180deg, var(--lane-music), var(--lane-music-strong));
+}
+
+.lane-block--photo {
+  border: 2px solid var(--lane-photo);
+  background: var(--lane-photo-bg);
+}
+
+.lane-block--text {
+  background: linear-gradient(180deg, var(--lane-text), var(--lane-text-strong));
+}
+
+.lane-block--selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.lane-block--muted {
+  opacity: 0.45;
+}
+
+.lane-block__waveform {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.lane-block__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0 14px 0 6px;
+  pointer-events: none;
+}
+
+.lane-block--photo .lane-block__label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  padding: 1px 14px 1px 4px;
+}
+
+.lane-block__thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.lane-block__resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+.lane-block__resize--left {
+  left: 0;
+}
+.lane-block__resize--right {
+  right: 0;
+}
+
+.lane-block__remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ff4d4d;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+  box-shadow: var(--lane-shadow);
+}
+.lane-block__remove:hover {
+  filter: brightness(1.1);
+}
+
+.lane-block__rotate {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+}
+.lane-block__rotate:hover {
+  background: var(--accent);
+  color: #141414;
+}
+
