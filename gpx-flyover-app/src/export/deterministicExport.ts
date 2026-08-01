@@ -3,6 +3,7 @@ import { buildAnimParams, cameraForFrame, initialBearing, stepBearing } from '..
 import { renderMusicMixOffline, sliceAudioBuffer } from '../audio/musicMix';
 import { updateRouteDoneUpTo } from '../map/mapSetup';
 import { computePathIndex } from '../timeline/timelineMath';
+import { getActiveVideoClip, seekVideoFrame } from '../video/videoEngine';
 import {
   buildProfileBackground,
   buildSecondaryIndexes,
@@ -11,6 +12,7 @@ import {
   drawOverlayFrame,
   scaleMusicTracksForSpeed,
   scalePhotoClipsForSpeed,
+  scaleVideoClipsForSpeed,
   scaleTextOverlaysForSpeed,
   waitForMapIdle,
   type RecordFlightArgs,
@@ -56,6 +58,7 @@ export async function recordFlightDeterministic(
     title,
     selectedSpeed,
     photoClips,
+    videoClips,
     textOverlays,
   } = args;
   const secondaryIndexes = buildSecondaryIndexes(secondaryTracks);
@@ -65,10 +68,11 @@ export async function recordFlightDeterministic(
   const p = buildAnimParams(track, video, camera, title, effectiveDuration);
   let smoothBearing = initialBearing(p);
 
-  // Stesso riscalamento di recordFlight: le posizioni di musica/foto/testo sono pensate
+  // Stesso riscalamento di recordFlight: le posizioni di musica/foto/video/testo sono pensate
   // dall'utente sulla durata nominale, vanno riportate in proporzione alla durata effettiva.
   const scaledMusicTracks = scaleMusicTracksForSpeed(musicTracks, selectedSpeed);
   const scaledPhotoClips = scalePhotoClipsForSpeed(photoClips, selectedSpeed);
+  const scaledVideoClips = scaleVideoClipsForSpeed(videoClips, selectedSpeed);
   const scaledTextOverlays = scaleTextOverlaysForSpeed(textOverlays, selectedSpeed);
 
   // Intervallo selezionato con le maniglie sulla barra video (PreviewControls.tsx), in secondi
@@ -98,7 +102,7 @@ export async function recordFlightDeterministic(
   // Stesso pre-caricamento di recordFlight: posiziona la camera sul PRIMO fotogramma del
   // ritaglio (non necessariamente l'inizio assoluto del percorso) e attende che la mappa sia
   // davvero pronta prima di iniziare a disegnare/codificare.
-  const pathIndexAtStart = computePathIndex(frameStart / p.fps, p.totalFrames, p.fps, scaledPhotoClips);
+  const pathIndexAtStart = computePathIndex(frameStart / p.fps, p.totalFrames, p.fps, scaledPhotoClips, scaledVideoClips);
   map.jumpTo(cameraForFrame(p, pathIndexAtStart, smoothBearing));
   updateRouteDoneUpTo(
     map,
@@ -108,7 +112,7 @@ export async function recordFlightDeterministic(
   computeSecondaryFrame(map, secondaryIndexes, p.path[pathIndexAtStart].clockTimeMs);
   await waitForMapIdle(map);
 
-  const musicBuffer = await renderMusicMixOffline(scaledMusicTracks, musicVolume, effectiveDuration);
+  const musicBuffer = await renderMusicMixOffline(scaledMusicTracks, musicVolume, effectiveDuration, scaledVideoClips);
   const slicedMusicBuffer = musicBuffer ? sliceAudioBuffer(musicBuffer, effRangeStart, effRangeEnd) : null;
 
   const output = new Output({
@@ -147,7 +151,7 @@ export async function recordFlightDeterministic(
       // foto/testo/percorso vanno cercati nella loro posizione originale sulla timeline nominale.
       // Solo il timestamp scritto nel file di output (sotto) è relativo all'inizio del ritaglio.
       const videoTimeSec = i / p.fps;
-      const pathIndex = computePathIndex(videoTimeSec, p.totalFrames, p.fps, scaledPhotoClips);
+      const pathIndex = computePathIndex(videoTimeSec, p.totalFrames, p.fps, scaledPhotoClips, scaledVideoClips);
       while (lastPathIndex < pathIndex) {
         lastPathIndex++;
         smoothBearing = stepBearing(smoothBearing, lastPathIndex, p);
@@ -159,6 +163,13 @@ export async function recordFlightDeterministic(
         String(primaryTrackId),
       );
       const secondaryPositions = computeSecondaryFrame(map, secondaryIndexes, p.path[pathIndex].clockTimeMs);
+
+      // Se una clip video è attiva in questo istante, seek esplicito al fotogramma sorgente
+      // giusto PRIMA di disegnare — stessa precisione deterministica del resto dell'esportazione.
+      const activeClip = getActiveVideoClip(scaledVideoClips, videoTimeSec);
+      if (activeClip) {
+        await seekVideoFrame(activeClip.videoEl, activeClip.trimStart + (videoTimeSec - activeClip.videoStart));
+      }
 
       // Un solo repaint reale prima di catturare il canvas — qui non serve più ritmare
       // sull'orologio reale come in recordFlight: ogni fotogramma può richiedere quanto tempo
@@ -182,6 +193,7 @@ export async function recordFlightDeterministic(
           pitch: p.pitch,
           timeSec: videoTimeSec,
           photoClips: scaledPhotoClips,
+          videoClips: scaledVideoClips,
           textOverlays: scaledTextOverlays,
           showAltitudeProfile: video.showAltitudeProfile,
         },

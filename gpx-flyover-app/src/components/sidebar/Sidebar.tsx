@@ -103,7 +103,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
         <SidebarSection title="Mezzo" icon={Car}>
           <VehiclePanel selectedTrackId={effectiveSelectedTrackId} onSelectTrack={setSelectedTrackId} />
         </SidebarSection>
-        <SidebarSection title="Musica & Foto" icon={Music}>
+        <SidebarSection title="Musica, Foto & Video" icon={Music}>
           <MusicPhotosPanel />
         </SidebarSection>
         <SidebarSection title="Progetto" icon={FolderOpen}>

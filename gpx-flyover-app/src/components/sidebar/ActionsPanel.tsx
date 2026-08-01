@@ -52,6 +52,7 @@ export function ActionsPanel({ onLoad, hasTracks }: ActionsPanelProps) {
     try {
       const { video, camera, musicTracks, musicVolume, title, tracks } = useProjectStore.getState();
       const photoClips = useProjectStore.getState().photoClips;
+      const videoClips = useProjectStore.getState().videoClips;
       const textOverlays = useProjectStore.getState().textOverlays;
       recCanvas.style.display = 'block';
       const recordArgs = {
@@ -69,6 +70,7 @@ export function ActionsPanel({ onLoad, hasTracks }: ActionsPanelProps) {
         title,
         selectedSpeed: playbackSpeed,
         photoClips,
+        videoClips,
         textOverlays,
       };
 

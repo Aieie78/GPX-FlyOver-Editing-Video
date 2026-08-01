@@ -39,6 +39,7 @@ export function useTimelineKeyboardShortcuts(): void {
         e.preventDefault();
         if (selection.type === 'music') useProjectStore.getState().removeMusicTrack(selection.id);
         else if (selection.type === 'photo') useProjectStore.getState().removePhotoClip(selection.id);
+        else if (selection.type === 'video') useProjectStore.getState().removeVideoClip(selection.id);
         else useProjectStore.getState().removeTextOverlay(selection.id);
         useTimelineSelectionStore.getState().clear();
       }

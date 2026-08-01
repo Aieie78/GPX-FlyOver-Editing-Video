@@ -15,12 +15,16 @@ export function TimelineInspector() {
   const clearSelection = useTimelineSelectionStore((s) => s.clear);
   const musicTracks = useProjectStore((s) => s.musicTracks);
   const photoClips = useProjectStore((s) => s.photoClips);
+  const videoClips = useProjectStore((s) => s.videoClips);
   const textOverlays = useProjectStore((s) => s.textOverlays);
   const updateMusicTrack = useProjectStore((s) => s.updateMusicTrack);
   const duplicateMusicTrack = useProjectStore((s) => s.duplicateMusicTrack);
   const splitMusicTrackAt = useProjectStore((s) => s.splitMusicTrackAt);
   const duplicatePhotoClip = useProjectStore((s) => s.duplicatePhotoClip);
   const splitPhotoClipAt = useProjectStore((s) => s.splitPhotoClipAt);
+  const updateVideoClip = useProjectStore((s) => s.updateVideoClip);
+  const duplicateVideoClip = useProjectStore((s) => s.duplicateVideoClip);
+  const splitVideoClipAt = useProjectStore((s) => s.splitVideoClipAt);
   const updateTextOverlay = useProjectStore((s) => s.updateTextOverlay);
   const duplicateTextOverlay = useProjectStore((s) => s.duplicateTextOverlay);
   const currentTimeSec = usePlaybackStore((s) => s.currentTimeSec);
@@ -106,6 +110,50 @@ export function TimelineInspector() {
           className="timeline-inspector__btn"
           title="Duplica"
           onClick={() => duplicateTextOverlay(overlay.id)}
+        >
+          <Copy size={13} />
+        </button>
+        <button type="button" className="timeline-inspector__close" title="Deseleziona" onClick={clearSelection}>
+          ×
+        </button>
+      </div>
+    );
+  }
+
+  if (selection.type === 'video') {
+    const clip = videoClips.find((c) => c.id === selection.id);
+    if (!clip) return null;
+    const start = clip.videoStart;
+    const end = start + (clip.trimEnd - clip.trimStart);
+    const canSplit = currentTimeSec > start + 0.15 && currentTimeSec < end - 0.15;
+
+    return (
+      <div className="timeline-inspector">
+        <span className="timeline-inspector__name" title={clip.name}>
+          {clip.name}
+        </span>
+        <button
+          type="button"
+          className={`timeline-inspector__btn${clip.muted ? ' timeline-inspector__btn--active' : ''}`}
+          title={clip.muted ? 'Riattiva audio' : 'Muto'}
+          onClick={() => updateVideoClip(clip.id, { muted: !clip.muted })}
+        >
+          {clip.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+        </button>
+        <button
+          type="button"
+          className="timeline-inspector__btn"
+          disabled={!canSplit}
+          title="Taglia al playhead"
+          onClick={() => splitVideoClipAt(clip.id, currentTimeSec)}
+        >
+          <Scissors size={13} />
+        </button>
+        <button
+          type="button"
+          className="timeline-inspector__btn"
+          title="Duplica"
+          onClick={() => duplicateVideoClip(clip.id)}
         >
           <Copy size={13} />
         </button>

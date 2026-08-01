@@ -67,9 +67,19 @@ try {
     Copy-Item -Path (Join-Path $appDir 'dist\*') -Destination $portableAppDir -Recurse -Force
     Copy-Item -Path (Join-Path $templateDir '*') -Destination $portableDir -Force
 
+    # Un file .bat non può avere un'icona propria in Windows: creiamo un collegamento (.lnk) che
+    # punta allo stesso .bat ma mostra l'icona del tool — è quello da usare per il doppio click.
+    $shortcutPath = Join-Path $portableDir 'Avvia GPX Flyover.lnk'
+    $wshShell = New-Object -ComObject WScript.Shell
+    $shortcut = $wshShell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = Join-Path $portableDir 'Avvia GPX Flyover.bat'
+    $shortcut.WorkingDirectory = $portableDir
+    $shortcut.IconLocation = Join-Path $portableDir 'icon.ico'
+    $shortcut.Save()
+
     Write-Host "Pacchetto pronto: $portableDir" -ForegroundColor Green
     Write-Host "Per portare il tool su un altro PC: copia l'intera cartella 'portable' (rinominala come" -ForegroundColor Green
-    Write-Host "preferisci) e li lancia 'Avvia GPX Flyover.bat' - serve solo Node.js installato, nient'altro.`n" -ForegroundColor Green
+    Write-Host "preferisci) e lancia 'Avvia GPX Flyover.lnk' (icona del tool) - serve solo Node.js installato, nient'altro.`n" -ForegroundColor Green
 
     Write-Host "Avvio l'anteprima locale della build (vite preview): il browser si apre automaticamente." -ForegroundColor Cyan
     Write-Host "Chiudi questa finestra per fermare il server.`n" -ForegroundColor DarkGray

@@ -1,11 +1,12 @@
 import type { Map as MapLibreMap } from 'maplibre-gl';
 import { buildAnimParams, cameraForFrame, initialBearing, stepBearing } from '../camera/camera';
-import { resetMusicAnchor, stopMusicPreview, syncMusicPreview } from '../audio/musicEngine';
+import { resetMusicAnchor, setMusicGainVolume, stopMusicPreview, syncMusicPreview } from '../audio/musicEngine';
 import { updateRouteDoneUpTo } from '../map/mapSetup';
 import { buildTimeIndex, findPointAtTime, type TimedPoint, type TimeIndexedTrack } from '../geo/geo';
 import { computePathIndex } from '../timeline/timelineMath';
 import { drawAltitudeLine, drawVehicleIcon, vehicleScreenPos } from '../vehicle/vehicleIcon';
 import { drawPhotoCover, getActivePhotoLayers } from '../photos/photoEngine';
+import { computeDuckFactor, drawVideoCover, getActiveVideoClip, syncPreviewVideo } from '../video/videoEngine';
 import { drawLiveStatsBox } from '../stats/liveStatsOverlay';
 import { drawTextOverlay, getActiveTextOverlays } from '../text/textEngine';
 import type {
@@ -16,6 +17,7 @@ import type {
   PlaybackSpeed,
   TextOverlay,
   VehicleTrack,
+  VideoClip,
   VideoParams,
 } from '../types/domain';
 
@@ -36,7 +38,9 @@ export interface PreviewEngineDeps {
   getCameraParams: () => CameraParams;
   getTitle: () => string;
   getMusicTracks: () => MusicTrack[];
+  getMusicVolume: () => number;
   getPhotoClips: () => PhotoClip[];
+  getVideoClips: () => VideoClip[];
   getTextOverlays: () => TextOverlay[];
   onTick: (info: PreviewTickInfo) => void;
   onEnded: () => void;
@@ -110,6 +114,7 @@ export class PreviewEngine {
     if (this.state) this.state.playing = false;
     this.overlayCtx.clearRect(0, 0, this.deps.overlayCanvas.width, this.deps.overlayCanvas.height);
     stopMusicPreview();
+    this.deps.getVideoClips().forEach((c) => c.videoEl.pause());
     this.state = null;
   }
 
@@ -123,7 +128,20 @@ export class PreviewEngine {
       this.rafHandle = requestAnimationFrame(this.loop);
     } else {
       stopMusicPreview();
+      syncPreviewVideo(this.deps.getVideoClips(), s.i / s.fps, false, s.speed, () =>
+        this.rerenderIfStillPaused(s.i),
+      );
     }
+  }
+
+  // Richiamata da syncPreviewVideo quando, da fermi, il fotogramma video richiesto non era ancora
+  // pronto al momento del disegno e il browser lo ha appena consegnato (evento 'seeked'). Ridisegna
+  // solo se nel frattempo lo stato non è cambiato (nessun nuovo seek, ancora in pausa) — altrimenti
+  // il ciclo di riproduzione o un seek più recente stanno già occupandosene.
+  private rerenderIfStillPaused(expectedI: number): void {
+    const s = this.state;
+    if (!s || s.playing || s.i !== expectedI) return;
+    this.renderFrame(s.i);
   }
 
   setSpeed(speed: PlaybackSpeed): void {
@@ -147,7 +165,13 @@ export class PreviewEngine {
     const s = this.state;
     if (!s) return;
     const clamped = Math.max(0, Math.min(s.totalFrames - 1, Math.round(idx)));
-    const newPathIndex = computePathIndex(clamped / s.fps, s.totalFrames, s.fps, this.deps.getPhotoClips());
+    const newPathIndex = computePathIndex(
+      clamped / s.fps,
+      s.totalFrames,
+      s.fps,
+      this.deps.getPhotoClips(),
+      this.deps.getVideoClips(),
+    );
     let sb = initialBearing(s);
     for (let k = 1; k <= newPathIndex; k++) sb = stepBearing(sb, k, s);
     s.smoothBearing = sb;
@@ -170,7 +194,13 @@ export class PreviewEngine {
 
     const p = this.buildParams();
     const newI = Math.max(0, Math.min(p.totalFrames - 1, Math.round(progressFraction * (p.totalFrames - 1))));
-    const newPathIndex = computePathIndex(newI / p.fps, p.totalFrames, p.fps, this.deps.getPhotoClips());
+    const newPathIndex = computePathIndex(
+      newI / p.fps,
+      p.totalFrames,
+      p.fps,
+      this.deps.getPhotoClips(),
+      this.deps.getVideoClips(),
+    );
 
     let sb = initialBearing(p);
     for (let k = 1; k <= newPathIndex; k++) sb = stepBearing(sb, k, p);
@@ -235,8 +265,15 @@ export class PreviewEngine {
     const clampedI = Math.min(s.totalFrames - 1, targetI);
     s.i = clampedI;
 
-    // il percorso avanza solo quando NON siamo dentro una foto (congelato durante la sua visualizzazione)
-    const newPathIndex = computePathIndex(clampedI / s.fps, s.totalFrames, s.fps, this.deps.getPhotoClips());
+    // il percorso avanza solo quando NON siamo dentro una foto/clip video (congelato durante la
+    // loro visualizzazione)
+    const newPathIndex = computePathIndex(
+      clampedI / s.fps,
+      s.totalFrames,
+      s.fps,
+      this.deps.getPhotoClips(),
+      this.deps.getVideoClips(),
+    );
     while (s.pathIndex < newPathIndex) {
       s.pathIndex++;
       s.smoothBearing = stepBearing(s.smoothBearing, s.pathIndex, s);
@@ -283,6 +320,14 @@ export class PreviewEngine {
     });
 
     syncMusicPreview(this.deps.getMusicTracks(), s.playing);
+    // Clip video: riproduzione/pausa native (audio incluso, "gratis") della sola clip attiva.
+    syncPreviewVideo(this.deps.getVideoClips(), i / s.fps, s.playing, s.speed, () =>
+      this.rerenderIfStillPaused(i),
+    );
+    // Ducking automatico e fisso della musica di sottofondo durante una clip video attiva —
+    // applicato sul nodo di volume condiviso (lo stesso aggiornato da liveParamsSync sul cambio
+    // dello slider), qui moltiplicato per il fattore di ducking di questo istante.
+    setMusicGainVolume(this.deps.getMusicVolume() * computeDuckFactor(this.deps.getVideoClips(), i / s.fps));
 
     // Con il terreno 3D attivo, la proiezione schermo di un punto (map.project, usata da
     // vehicleScreenPos per posizionare l'icona) riflette l'aggancio al terreno solo dopo che
@@ -340,6 +385,11 @@ export class PreviewEngine {
         layer.alpha,
         layer.photo.rotation,
       );
+    }
+
+    const activeVideoClip = getActiveVideoClip(this.deps.getVideoClips(), i / s.fps);
+    if (activeVideoClip && activeVideoClip.videoEl.readyState >= 2) {
+      drawVideoCover(this.overlayCtx, activeVideoClip.videoEl, overlayCanvas.width, overlayCanvas.height);
     }
 
     const activeTexts = getActiveTextOverlays(this.deps.getTextOverlays(), i / s.fps);

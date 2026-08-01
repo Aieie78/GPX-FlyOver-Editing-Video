@@ -3,6 +3,7 @@ import { useProjectStore } from '../../store/useProjectStore';
 import { MAX_TIMELINE_ZOOM, MIN_TIMELINE_ZOOM, useTimelineViewStore } from '../../store/useTimelineViewStore';
 import { MusicLane } from './MusicLane';
 import { PhotoLane } from './PhotoLane';
+import { VideoLane } from './VideoLane';
 import { TextLane } from './TextLane';
 import { TimelineInspector } from './TimelineInspector';
 import { TimelineRuler } from './TimelineRuler';
@@ -69,6 +70,7 @@ export function Timeline() {
       <TimelineRuler />
       <MusicLane />
       <PhotoLane />
+      <VideoLane />
       <TextLane />
     </div>
   );

@@ -153,6 +153,23 @@ export interface PhotoClip {
   rotation: PhotoRotation; // correzione orientamento, in step di 90°
 }
 
+// Clip video propria (es. da action cam) importata su una corsia dedicata della timeline — stesso
+// comportamento di congelamento del volo già usato per le foto (Fase 6, prompt-video-import.md).
+// Nessuna correzione di rotazione (assunte già orientate correttamente dai metadati del
+// contenitore) e nessuna dissolvenza incrociata tra clip sovrapposte (semplificazioni accettate
+// per questa prima versione).
+export interface VideoClip {
+  id: number;
+  name: string;
+  videoEl: HTMLVideoElement;
+  audioBuffer: AudioBuffer | null; // null se il file non ha una traccia audio o la decodifica fallisce
+  posterDataUrl: string; // miniatura per il blocco in timeline
+  videoStart: number; // posizione di attacco sulla timeline video
+  trimStart: number; // secondi, riferiti al file sorgente
+  trimEnd: number;
+  muted: boolean;
+}
+
 // Parametri di animazione costruiti da buildAnimParams (gpx-flyover.html:679), condivisi da
 // anteprima e registrazione.
 export interface AnimParams {
@@ -189,6 +206,7 @@ export interface ProjectState {
   musicVolume: number; // 0..1, globale
   photoClips: PhotoClip[];
   photoDefaultDuration: number;
+  videoClips: VideoClip[];
   textOverlays: TextOverlay[];
   snapEnabled: boolean;
 }

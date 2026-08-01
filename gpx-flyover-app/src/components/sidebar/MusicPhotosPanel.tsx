@@ -1,11 +1,14 @@
 import type { ChangeEvent } from 'react';
 import { decodeMusicFile } from '../../audio/musicEngine';
 import { buildPhotoClipAppended } from '../../photos/photoEngine';
+import { buildVideoClipAppended } from '../../video/videoEngine';
 import { useProjectStore } from '../../store/useProjectStore';
 import { usePlaybackStore } from '../../store/usePlaybackStore';
 
-// Port dei controlli musica/foto di gpx-flyover.html:193-201. Le liste con drag/trim vivono
-// nella Timeline sotto la mappa (gpx-flyover.html:867-1189), qui solo upload e default.
+// Port dei controlli musica/foto di gpx-flyover.html:193-201, esteso in Fase 6 con l'upload
+// video (batch, in coda alle clip esistenti — stesso pattern di foto/musica). Le liste con
+// drag/trim vivono nella Timeline sotto la mappa (gpx-flyover.html:867-1189), qui solo upload e
+// default.
 export function MusicPhotosPanel() {
   const musicVolume = useProjectStore((s) => s.musicVolume);
   const setMusicVolume = useProjectStore((s) => s.setMusicVolume);
@@ -13,6 +16,7 @@ export function MusicPhotosPanel() {
   const photoDefaultDuration = useProjectStore((s) => s.photoDefaultDuration);
   const setPhotoDefaultDuration = useProjectStore((s) => s.setPhotoDefaultDuration);
   const addPhotoClip = useProjectStore((s) => s.addPhotoClip);
+  const addVideoClip = useProjectStore((s) => s.addVideoClip);
   const setStatusMessage = usePlaybackStore((s) => s.setStatusMessage);
 
   const handleMusicFiles = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -44,6 +48,21 @@ export function MusicPhotosPanel() {
     e.target.value = '';
   };
 
+  const handleVideoFiles = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = [...(e.target.files ?? [])];
+    for (const file of files) {
+      try {
+        const totalDur = useProjectStore.getState().video.durationSec;
+        const clip = await buildVideoClipAppended(file, useProjectStore.getState().videoClips, totalDur);
+        addVideoClip(clip);
+      } catch (err) {
+        console.error('Errore caricamento video', file.name, err);
+        setStatusMessage(`Impossibile leggere il file video "${file.name}" — formato non supportato?`);
+      }
+    }
+    e.target.value = '';
+  };
+
   return (
     <>
       <label>Musica di sottofondo (uno o più brani)</label>
@@ -68,6 +87,9 @@ export function MusicPhotosPanel() {
         value={photoDefaultDuration}
         onChange={(e) => setPhotoDefaultDuration(parseFloat(e.target.value) || 3)}
       />
+
+      <label>Video nella timeline (opzionale, es. da action cam)</label>
+      <input type="file" accept="video/*" multiple onChange={handleVideoFiles} />
       <p className="field-hint">Trascina i blocchi nella timeline qui sotto per posizionarli e tagliarli.</p>
     </>
   );

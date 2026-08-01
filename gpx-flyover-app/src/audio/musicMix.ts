@@ -1,4 +1,5 @@
-import type { MusicTrack } from '../types/domain';
+import type { MusicTrack, VideoClip } from '../types/domain';
+import { DUCK_FADE_SEC, DUCK_LEVEL } from '../video/videoEngine';
 
 const OFFLINE_SAMPLE_RATE = 48000;
 
@@ -116,6 +117,50 @@ export function sliceAudioBuffer(buffer: AudioBuffer, startSec: number, endSec: 
   return out;
 }
 
+// Finestre di ducking non sovrapposte dovute alle clip video (muted escluse: nessun audio da
+// "proteggere"): quando due clip si sovrappongono per errore, la prima per ordine di inizio vince
+// per l'intera sovrapposizione — stessa regola di getActiveVideoClip (videoEngine.ts), qui
+// applicata in anticipo per poter programmare le rampe sull'intera durata invece che frame-by-frame.
+function resolveDuckWindows(videoClips: VideoClip[]): Array<{ start: number; end: number }> {
+  const sorted = [...videoClips]
+    .filter((c) => !c.muted && c.trimEnd - c.trimStart > 0.05)
+    .sort((a, b) => a.videoStart - b.videoStart);
+  const windows: Array<{ start: number; end: number }> = [];
+  let lastEnd = -Infinity;
+  for (const c of sorted) {
+    const start = Math.max(c.videoStart, lastEnd);
+    const end = c.videoStart + (c.trimEnd - c.trimStart);
+    if (end <= start) continue; // completamente coperta da una clip precedente: nessun effetto proprio
+    windows.push({ start, end });
+    lastEnd = end;
+  }
+  return windows;
+}
+
+// Programma su un AudioParam la rampa 1→DUCK_LEVEL→1 per ciascuna finestra video (ducking fisso
+// della musica di sottofondo, stesso stile di scheduleTrackGainEnvelope), in coordinate assolute
+// di AudioContext (timeOffset è il ctx-time corrispondente a videoTime=0).
+export function scheduleDuckEnvelope(
+  gainParam: AudioParam,
+  videoClips: VideoClip[],
+  durationSec: number,
+  timeOffset: number,
+): void {
+  const windows = resolveDuckWindows(videoClips).filter((w) => w.start < durationSec);
+  for (const w of windows) {
+    const end = Math.min(w.end, durationSec);
+    const length = end - w.start;
+    if (length <= 0.05) continue;
+    const fade = Math.min(DUCK_FADE_SEC, length / 2);
+    gainParam.setValueAtTime(1, timeOffset + w.start);
+    gainParam.linearRampToValueAtTime(DUCK_LEVEL, timeOffset + w.start + fade);
+    if (end - fade > w.start + fade) {
+      gainParam.setValueAtTime(DUCK_LEVEL, timeOffset + end - fade);
+    }
+    gainParam.linearRampToValueAtTime(1, timeOffset + end);
+  }
+}
+
 // Rende in modo deterministico l'intero mix musicale (sovrapposizioni + dissolvenza finale) in
 // UN SOLO AudioBuffer, su un OfflineAudioContext — non vincolato al tempo reale. Usata sia dal
 // rendering deterministico (deterministicExport.ts) sia dalla registrazione in tempo reale
@@ -129,15 +174,23 @@ export async function renderMusicMixOffline(
   musicTracks: MusicTrack[],
   musicVolume: number,
   durationSec: number,
+  videoClips: VideoClip[] = [],
 ): Promise<AudioBuffer | null> {
   const anySolo = musicTracks.some((t) => t.solo);
   const hasMusic = musicTracks.some((t) => t.trimEnd - t.trimStart > 0.05 && effectiveTrackVolume(t, anySolo) > 0);
-  if (!hasMusic) return null;
+  const hasClipAudio = videoClips.some((c) => !c.muted && c.audioBuffer && c.trimEnd - c.trimStart > 0.05);
+  if (!hasMusic && !hasClipAudio) return null;
 
   const offlineCtx = new OfflineAudioContext(2, Math.ceil(durationSec * OFFLINE_SAMPLE_RATE), OFFLINE_SAMPLE_RATE);
   const gainNode = offlineCtx.createGain();
   gainNode.gain.value = musicVolume;
-  gainNode.connect(offlineCtx.destination);
+  // Ducking automatico e fisso: la musica di sottofondo si abbassa da sola durante le finestre
+  // video (nodo separato dal gain principale, che resta dedicato a musicVolume + dissolvenza
+  // finale — così le due automazioni non si sovrascrivono a vicenda).
+  const duckGain = offlineCtx.createGain();
+  scheduleDuckEnvelope(duckGain.gain, videoClips, durationSec, 0);
+  gainNode.connect(duckGain);
+  duckGain.connect(offlineCtx.destination);
 
   const fadeWindows = computeMusicFadeWindows(musicTracks);
   musicTracks.forEach((track) => {
@@ -163,6 +216,24 @@ export async function renderMusicMixOffline(
   const fadeStart = Math.max(0, durationSec - 2);
   gainNode.gain.setValueAtTime(musicVolume, fadeStart);
   gainNode.gain.linearRampToValueAtTime(0, fadeStart + 2);
+
+  // Audio proprio delle clip video: sommato al mix a piena scala (non soggetto al ducking, che
+  // esiste solo per abbassare LA MUSICA mentre la clip parla) — collegato direttamente alla
+  // destinazione, in un nodo indipendente da gainNode/duckGain.
+  const clipAudioGain = offlineCtx.createGain();
+  clipAudioGain.gain.value = 1;
+  clipAudioGain.connect(offlineCtx.destination);
+  videoClips.forEach((clip) => {
+    if (clip.muted || !clip.audioBuffer) return;
+    const length = clip.trimEnd - clip.trimStart;
+    if (length <= 0.05) return;
+    if (clip.videoStart >= durationSec) return;
+    const playLen = Math.min(length, durationSec - clip.videoStart);
+    const source = offlineCtx.createBufferSource();
+    source.buffer = clip.audioBuffer;
+    source.connect(clipAudioGain);
+    source.start(clip.videoStart, clip.trimStart, playLen);
+  });
 
   return offlineCtx.startRendering();
 }

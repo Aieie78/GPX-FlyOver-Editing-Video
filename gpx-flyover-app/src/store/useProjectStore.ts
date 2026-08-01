@@ -4,6 +4,7 @@ import { nextMusicId } from '../audio/musicEngine';
 import { nextPhotoId } from '../photos/photoEngine';
 import { nextTextId } from '../text/textEngine';
 import { nextTrackId } from '../gpx/parseGpx';
+import { nextVideoId } from '../video/videoEngine';
 import { effectiveRouteColor, pickRouteColor } from '../vehicle/routeColor';
 import type {
   CameraParams,
@@ -16,6 +17,7 @@ import type {
   Track,
   VehicleParams,
   VehicleTrack,
+  VideoClip,
   VideoParams,
 } from '../types/domain';
 
@@ -57,6 +59,11 @@ interface ProjectActions {
   removePhotoClip: (id: number) => void;
   duplicatePhotoClip: (id: number) => void;
   splitPhotoClipAt: (id: number, atSec: number) => void;
+  addVideoClip: (clip: VideoClip) => void;
+  updateVideoClip: (id: number, patch: Partial<VideoClip>) => void;
+  removeVideoClip: (id: number) => void;
+  duplicateVideoClip: (id: number) => void;
+  splitVideoClipAt: (id: number, atSec: number) => void;
   addTextOverlay: (text: string, videoStart: number, duration: number) => number;
   updateTextOverlay: (id: number, patch: Partial<TextOverlay>) => void;
   removeTextOverlay: (id: number) => void;
@@ -108,6 +115,7 @@ const initialState: ProjectState = {
   musicVolume: 0.6,
   photoClips: [],
   photoDefaultDuration: 3,
+  videoClips: [],
   textOverlays: [],
   snapEnabled: true,
 };
@@ -235,6 +243,39 @@ export const useProjectStore = create<ProjectStore>()(
           return {
             photoClips: [
               ...s.photoClips.map((x) => (x.id === id ? { ...x, duration: cutOffset } : x)),
+              second,
+            ],
+          };
+        }),
+      addVideoClip: (clip) => set((s) => ({ videoClips: [...s.videoClips, clip] })),
+      updateVideoClip: (id, patch) =>
+        set((s) => ({
+          videoClips: s.videoClips.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+        })),
+      removeVideoClip: (id) =>
+        set((s) => ({ videoClips: s.videoClips.filter((c) => c.id !== id) })),
+      duplicateVideoClip: (id) =>
+        set((s) => {
+          const c = s.videoClips.find((x) => x.id === id);
+          if (!c) return {};
+          const length = c.trimEnd - c.trimStart;
+          const videoStart = Math.min(Math.max(0, s.video.durationSec - length), c.videoStart + length);
+          return { videoClips: [...s.videoClips, { ...c, id: nextVideoId(), videoStart }] };
+        }),
+      // Taglia una clip nel punto atSec in due clip distinte, come splitMusicTrackAt — riferiscono
+      // lo stesso <video>/AudioBuffer, cambia solo il ritaglio (trimStart/trimEnd) e la posizione.
+      splitVideoClipAt: (id, atSec) =>
+        set((s) => {
+          const c = s.videoClips.find((x) => x.id === id);
+          if (!c) return {};
+          const length = c.trimEnd - c.trimStart;
+          const cutOffset = atSec - c.videoStart;
+          if (cutOffset <= 0.15 || cutOffset >= length - 0.15) return {};
+          const cutTrim = c.trimStart + cutOffset;
+          const second: VideoClip = { ...c, id: nextVideoId(), videoStart: atSec, trimStart: cutTrim };
+          return {
+            videoClips: [
+              ...s.videoClips.map((x) => (x.id === id ? { ...x, trimEnd: cutTrim } : x)),
               second,
             ],
           };

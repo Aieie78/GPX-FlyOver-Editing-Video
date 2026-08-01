@@ -1,4 +1,19 @@
-import type { PhotoClip } from '../types/domain';
+import type { PhotoClip, VideoClip } from '../types/domain';
+
+// Adatta foto+video a un'unica lista di finestre di congelamento {videoStart, duration} — la
+// stessa forma già usata da videoTimeToPathTime, senza doverne riscrivere l'algoritmo (Fase 6,
+// prompt-video-import.md: le clip video congelano il volo esattamente come le foto).
+interface FreezeWindow {
+  videoStart: number;
+  duration: number;
+}
+
+function freezeWindowsOf(photoClips: PhotoClip[], videoClips: VideoClip[]): FreezeWindow[] {
+  return [
+    ...photoClips.map((p) => ({ videoStart: p.videoStart, duration: p.duration })),
+    ...videoClips.map((c) => ({ videoStart: c.videoStart, duration: c.trimEnd - c.trimStart })),
+  ];
+}
 
 // Calamita: arrotonda un valore in secondi al candidato più vicino (0, durata totale, playhead,
 // bordi di altri blocchi) se entro una piccola soglia — utile per accostare i blocchi senza buchi.
@@ -25,22 +40,27 @@ export function snapValue(value: number, candidates: number[], thresholdSec: num
 // entro la durata video impostata, qualunque sia il tempo totale rubato dalle foto — altrimenti
 // il volo si fermerebbe prima della fine, esattamente in proporzione al tempo delle foto (bug
 // osservato: un volo di 40s con foto/musica sovrapposte si fermava al 76% del percorso).
-export function videoTimeToPathTime(videoTime: number, photoClips: PhotoClip[], totalDurationSec: number): number {
-  const sorted = [...photoClips].sort((a, b) => a.videoStart - b.videoStart);
+export function videoTimeToPathTime(
+  videoTime: number,
+  photoClips: PhotoClip[],
+  totalDurationSec: number,
+  videoClips: VideoClip[] = [],
+): number {
+  const sorted = freezeWindowsOf(photoClips, videoClips).sort((a, b) => a.videoStart - b.videoStart);
   let subtracted = 0;
-  for (const photo of sorted) {
-    if (videoTime <= photo.videoStart) break;
-    if (videoTime >= photo.videoStart + photo.duration) {
-      subtracted += photo.duration; // foto già passata: tutto il suo tempo non conta per il volo
+  for (const w of sorted) {
+    if (videoTime <= w.videoStart) break;
+    if (videoTime >= w.videoStart + w.duration) {
+      subtracted += w.duration; // finestra già passata: tutto il suo tempo non conta per il volo
     } else {
-      subtracted += videoTime - photo.videoStart; // dentro la foto adesso: congela qui
+      subtracted += videoTime - w.videoStart; // dentro la finestra adesso: congela qui
       break;
     }
   }
   const rawFlightTime = Math.max(0, videoTime - subtracted);
 
-  const totalPhotoTime = sorted.reduce((sum, photo) => sum + photo.duration, 0);
-  const availableFlightTime = Math.max(0.001, totalDurationSec - totalPhotoTime);
+  const totalFrozenTime = sorted.reduce((sum, w) => sum + w.duration, 0);
+  const availableFlightTime = Math.max(0.001, totalDurationSec - totalFrozenTime);
   const speedUpFactor = totalDurationSec / availableFlightTime;
 
   return rawFlightTime * speedUpFactor;
@@ -80,8 +100,9 @@ export function computePathIndex(
   totalFrames: number,
   fps: number,
   photoClips: PhotoClip[],
+  videoClips: VideoClip[] = [],
 ): number {
   const totalDurationSec = totalFrames / fps;
-  const pt = videoTimeToPathTime(videoTimeSec, photoClips, totalDurationSec);
+  const pt = videoTimeToPathTime(videoTimeSec, photoClips, totalDurationSec, videoClips);
   return Math.max(0, Math.min(totalFrames - 1, Math.round(pt * fps)));
 }

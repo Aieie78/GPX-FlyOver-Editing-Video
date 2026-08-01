@@ -7,6 +7,7 @@ import { buildTimeIndex, findPointAtTime, type TimedPoint, type TimeIndexedTrack
 import { computePathIndex } from '../timeline/timelineMath';
 import { drawAltitudeLine, drawVehicleIcon, vehicleScreenPos } from '../vehicle/vehicleIcon';
 import { drawPhotoCover, getActivePhotoLayers } from '../photos/photoEngine';
+import { drawVideoCover, getActiveVideoClip, seekVideoFrame } from '../video/videoEngine';
 import { drawLiveStatsBox } from '../stats/liveStatsOverlay';
 import { drawTextOverlay, getActiveTextOverlays } from '../text/textEngine';
 import type {
@@ -20,6 +21,7 @@ import type {
   VehicleParams,
   VehicleTrack,
   VideoAspectRatio,
+  VideoClip,
   VideoParams,
 } from '../types/domain';
 
@@ -80,6 +82,25 @@ export function scalePhotoClipsForSpeed(photoClips: PhotoClip[], speed: Playback
     ...p,
     videoStart: p.videoStart / speed,
     duration: p.duration / speed,
+  }));
+}
+
+// Stesso riscalamento di scaleMusicTracksForSpeed (stessa forma videoStart/trimStart/trimEnd) —
+// una clip video piazzata guardando la durata nominale resta proporzionalmente al suo posto
+// quando la durata effettiva si comprime/allunga per la velocità di registrazione scelta.
+// Approssimazione accettata per questa prima versione, simmetrica a quella già scelta per la
+// musica: in ESPORTAZIONE a velocità ≠ x1 la finestra sulla timeline si accorcia/allunga ma il
+// contenuto sorgente resta a ritmo naturale (si vede una porzione proporzionalmente più corta/
+// lunga della clip, non l'intera clip accelerata) — in ANTEPRIMA invece la clip è sincronizzata a
+// velocità piena (syncPreviewVideo imposta playbackRate=speed sull'elemento <video>, mostrando
+// sempre l'intero contenuto scelto). Le due modalità divergono quindi leggermente per questo solo
+// aspetto quando speed≠1 — rimandabile in futuro se serve piena coerenza.
+export function scaleVideoClipsForSpeed(videoClips: VideoClip[], speed: PlaybackSpeed): VideoClip[] {
+  if (speed === 1) return videoClips;
+  return videoClips.map((c) => ({
+    ...c,
+    videoStart: c.videoStart / speed,
+    trimEnd: c.trimStart + (c.trimEnd - c.trimStart) / speed,
   }));
 }
 
@@ -212,6 +233,7 @@ interface DrawOverlayArgs {
   pitch: number;
   timeSec: number;
   photoClips: PhotoClip[];
+  videoClips: VideoClip[];
   textOverlays: TextOverlay[];
   showAltitudeProfile: boolean;
 }
@@ -229,7 +251,7 @@ export function drawOverlayFrame(
   args: DrawOverlayArgs,
   secondaryPositions: SecondaryFramePosition[] = [],
 ): void {
-  const { title, cur, progress, zoom, pitch, timeSec, photoClips, textOverlays, showAltitudeProfile } = args;
+  const { title, cur, progress, zoom, pitch, timeSec, photoClips, videoClips, textOverlays, showAltitudeProfile } = args;
   const mapCanvas = map.getCanvas();
   recCtx.drawImage(mapCanvas, 0, 0, recCanvas.width, recCanvas.height);
 
@@ -318,6 +340,12 @@ export function drawOverlayFrame(
     drawPhotoCover(recCtx, layer.photo.img, recCanvas.width, recCanvas.height, layer.alpha, layer.photo.rotation);
   }
 
+  // clip video della timeline (se attiva in questo istante): stesso punto delle foto, dopo di esse
+  const activeVideoClip = getActiveVideoClip(videoClips, timeSec);
+  if (activeVideoClip) {
+    drawVideoCover(recCtx, activeVideoClip.videoEl, recCanvas.width, recCanvas.height);
+  }
+
   // sovrapposizioni testuali della timeline (didascalie/titoli multipli)
   const activeTexts = getActiveTextOverlays(textOverlays, timeSec);
   for (const t of activeTexts) {
@@ -370,6 +398,7 @@ export interface RecordFlightArgs {
   title: string;
   selectedSpeed: PlaybackSpeed;
   photoClips: PhotoClip[];
+  videoClips: VideoClip[];
   textOverlays: TextOverlay[];
 }
 
@@ -418,6 +447,7 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
     title,
     selectedSpeed,
     photoClips,
+    videoClips,
     textOverlays,
   } = args;
   const secondaryIndexes = buildSecondaryIndexes(secondaryTracks);
@@ -427,11 +457,13 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
   const p = buildAnimParams(track, video, camera, title, effectiveDuration);
   let smoothBearing = initialBearing(p);
 
-  // Le posizioni di musica/foto/testo sono pensate dall'utente sulla durata NOMINALE — a velocità
-  // diversa da x1 vanno riscalate sulla durata EFFETTIVA per restare proporzionalmente corrette
-  // (vedi scaleMusicTracksForSpeed/scalePhotoClipsForSpeed/scaleTextOverlaysForSpeed più sopra).
+  // Le posizioni di musica/foto/video/testo sono pensate dall'utente sulla durata NOMINALE — a
+  // velocità diversa da x1 vanno riscalate sulla durata EFFETTIVA per restare proporzionalmente
+  // corrette (vedi scaleMusicTracksForSpeed/scalePhotoClipsForSpeed/scaleVideoClipsForSpeed/
+  // scaleTextOverlaysForSpeed più sopra).
   const scaledMusicTracks = scaleMusicTracksForSpeed(musicTracks, selectedSpeed);
   const scaledPhotoClips = scalePhotoClipsForSpeed(photoClips, selectedSpeed);
+  const scaledVideoClips = scaleVideoClipsForSpeed(videoClips, selectedSpeed);
   const scaledTextOverlays = scaleTextOverlaysForSpeed(textOverlays, selectedSpeed);
 
   // Intervallo selezionato con le maniglie sulla barra video (PreviewControls.tsx), in secondi
@@ -466,7 +498,7 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
   // visibili caricate) PRIMA di avviare MediaRecorder — altrimenti i primi secondi del video
   // mostrerebbero tile a bassa risoluzione/incomplete, dato che la cattura partirebbe subito dopo
   // il click invece che a mappa già pronta in quella posizione.
-  const pathIndexAtStart = computePathIndex(frameStart / p.fps, p.totalFrames, p.fps, scaledPhotoClips);
+  const pathIndexAtStart = computePathIndex(frameStart / p.fps, p.totalFrames, p.fps, scaledPhotoClips, scaledVideoClips);
   map.jumpTo(cameraForFrame(p, pathIndexAtStart, smoothBearing));
   updateRouteDoneUpTo(
     map,
@@ -476,14 +508,15 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
   computeSecondaryFrame(map, secondaryIndexes, p.path[pathIndexAtStart].clockTimeMs);
   await waitForMapIdle(map);
 
-  // --- musica di sottofondo (posizionamento libero per brano, opzionale) ---
-  // Il mix (sovrapposizioni + dissolvenze incrociate + volume/mute/solo) viene calcolato in
-  // anticipo con lo stesso renderer offline del percorso deterministico (musicMix.ts), poi
-  // ritagliato all'intervallo selezionato e riprodotto dal vivo come UN SOLO buffer — più
-  // semplice e robusto che programmare live ogni singolo brano con inizio/fine spostati
-  // sull'intervallo (specie per brani già iniziati PRIMA del ritaglio), e il risultato finale è
-  // identico a quello usato dal rendering deterministico.
-  const musicBuffer = await renderMusicMixOffline(scaledMusicTracks, musicVolume, effectiveDuration);
+  // --- musica di sottofondo (posizionamento libero per brano, opzionale) + audio delle clip
+  // video (ducking automatico della musica durante le loro finestre) ---
+  // Il mix (sovrapposizioni + dissolvenze incrociate + volume/mute/solo + audio clip/ducking)
+  // viene calcolato in anticipo con lo stesso renderer offline del percorso deterministico
+  // (musicMix.ts), poi ritagliato all'intervallo selezionato e riprodotto dal vivo come UN SOLO
+  // buffer — più semplice e robusto che programmare live ogni singolo brano con inizio/fine
+  // spostati sull'intervallo (specie per brani già iniziati PRIMA del ritaglio), e il risultato
+  // finale è identico a quello usato dal rendering deterministico.
+  const musicBuffer = await renderMusicMixOffline(scaledMusicTracks, musicVolume, effectiveDuration, scaledVideoClips);
   const slicedMusicBuffer = musicBuffer ? sliceAudioBuffer(musicBuffer, effRangeStart, effRangeEnd) : null;
   const hasMusic = slicedMusicBuffer != null;
 
@@ -535,7 +568,7 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
     // videoTimeSec resta assoluto (rispetto all'intera durata effettiva, non al ritaglio) —
     // foto/testo/percorso/musica sono già ritagliati/allineati su questa stessa base assoluta.
     const videoTimeSec = i / p.fps;
-    const pathIndex = computePathIndex(videoTimeSec, p.totalFrames, p.fps, scaledPhotoClips);
+    const pathIndex = computePathIndex(videoTimeSec, p.totalFrames, p.fps, scaledPhotoClips, scaledVideoClips);
     while (lastPathIndex < pathIndex) {
       lastPathIndex++;
       smoothBearing = stepBearing(smoothBearing, lastPathIndex, p);
@@ -547,6 +580,12 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
       String(primaryTrackId),
     );
     const secondaryPositions = computeSecondaryFrame(map, secondaryIndexes, p.path[pathIndex].clockTimeMs);
+    // Se una clip video è attiva in questo istante, seek esplicito al fotogramma sorgente giusto
+    // PRIMA di disegnare — per precisione deterministica, come il resto dell'esportazione.
+    const activeClip = getActiveVideoClip(scaledVideoClips, videoTimeSec);
+    if (activeClip) {
+      await seekVideoFrame(activeClip.videoEl, activeClip.trimStart + (videoTimeSec - activeClip.videoStart));
+    }
     await waitForFrameAndPace(recordingStart + videoTimeSec * 1000);
     drawOverlayFrame(
       composeCtx,
@@ -564,6 +603,7 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
         pitch: p.pitch,
         timeSec: videoTimeSec,
         photoClips: scaledPhotoClips,
+        videoClips: scaledVideoClips,
         textOverlays: scaledTextOverlays,
         showAltitudeProfile: video.showAltitudeProfile,
       },

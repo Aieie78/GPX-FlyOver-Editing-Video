@@ -262,6 +262,11 @@
   background: var(--lane-photo-bg);
 }
 
+.lane-block--video {
+  border: 2px solid var(--lane-video);
+  background: var(--lane-video-bg);
+}
+
 .lane-block--text {
   background: linear-gradient(180deg, var(--lane-text), var(--lane-text-strong));
 }
@@ -293,7 +298,8 @@
   pointer-events: none;
 }
 
-.lane-block--photo .lane-block__label {
+.lane-block--photo .lane-block__label,
+.lane-block--video .lane-block__label {
   position: absolute;
   left: 0;
   right: 0;
