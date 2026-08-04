@@ -349,9 +349,16 @@ export class PreviewEngine {
     secondaryPositions: Array<{ trackId: number; point: TimedPoint | null }>,
     targetTimeMs: number | null,
   ): void {
+    // Questo disegno arriva da un requestAnimationFrame schedulato da renderFrame — se nel
+    // frattempo stop() è già stato chiamato (es. avvio rapido della Registrazione subito dopo
+    // l'Anteprima, prima che il browser processi la cancellazione), o se la traccia principale
+    // non è più disponibile in questo istante, il frame è ormai stale: si esce senza disegnare
+    // invece di un cast non-null che altrimenti lancerebbe un TypeError silenzioso in questo rAF.
+    if (!this.state) return;
     const { map, overlayCanvas } = this.deps;
     const tracks = this.deps.getTracks();
-    const primary = tracks.find((t) => t.isPrimary)!;
+    const primary = tracks.find((t) => t.isPrimary);
+    if (!primary) return;
 
     // ridimensiona l'overlay se necessario e disegna l'icona del mezzo
     const rect = map.getContainer().getBoundingClientRect();
