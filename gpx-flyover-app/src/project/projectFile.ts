@@ -3,12 +3,14 @@ import { nextTextId } from '../text/textEngine';
 import type {
   CameraParams,
   MapParams,
+  MaxSpeedExclusion,
   MusicTrack,
   PhotoClip,
   ProjectState,
   SegmentMode,
   TextOverlay,
   VehicleParams,
+  VideoClip,
   VideoParams,
 } from '../types/domain';
 
@@ -23,14 +25,24 @@ interface SerializedPhotoClip {
 }
 
 // Solo metadati per traccia: il GPX vero e proprio NON viene incorporato (si ricarica sempre a
-// mano dalla sezione Sorgente GPX) — fileName+vehicle+isPrimary servono solo come promemoria di
-// come erano configurate le tracce al momento del salvataggio, da riapplicare manualmente dopo
-// aver ricaricato ciascun file (nessuna riassociazione automatica).
-interface SerializedTrackMeta {
+// mano dalla sezione Sorgente GPX) — fileName+vehicle+isPrimary+maxSpeedExclusions vengono
+// riapplicati AUTOMATICAMENTE non appena l'utente ricarica un file con lo stesso nome (vedi
+// Sidebar.tsx handleLoad, che confronta expectedTracksMeta in usePlaybackStore per nome file).
+export interface SerializedTrackMeta {
   fileName: string;
   vehicle: VehicleParams;
   isPrimary: boolean;
+  maxSpeedExclusions: MaxSpeedExclusion[];
 }
+
+// Stessi campi di MusicTrack tranne l'AudioBuffer decodificato (non incorporabile) e l'id (nuovo
+// ad ogni ricaricamento) — riapplicati automaticamente per nome file (vedi MusicPhotosPanel.tsx).
+export type SerializedMusicMeta = Omit<MusicTrack, 'buffer' | 'id'>;
+
+// Stessa idea di SerializedMusicMeta, per le clip video: il file sorgente (videoEl/audioBuffer/
+// posterDataUrl) non è incorporabile, solo posizione/taglio/muto — riapplicati automaticamente per
+// nome file (vedi MusicPhotosPanel.tsx, stesso pattern della musica).
+export type SerializedVideoMeta = Omit<VideoClip, 'id' | 'videoEl' | 'audioBuffer' | 'posterDataUrl'>;
 
 interface ProjectFileV1 {
   version: 1;
@@ -43,7 +55,7 @@ interface ProjectFileV1 {
   musicVolume: number;
   photoDefaultDuration: number;
   snapEnabled: boolean;
-  musicTracksMeta: Array<Omit<MusicTrack, 'buffer' | 'id'>>;
+  musicTracksMeta: SerializedMusicMeta[];
   photoClips: SerializedPhotoClip[];
   textOverlays: Array<Omit<TextOverlay, 'id'>>;
 }
@@ -62,9 +74,12 @@ interface ProjectFileV2 {
   // Solo metadati: il file audio vero e proprio NON viene incorporato (potrebbe pesare decine di
   // MB in base64 per brano) — servono solo come promemoria di quali brani riaggiungere a mano
   // dalla sezione Musica & Foto dopo il caricamento.
-  musicTracksMeta: Array<Omit<MusicTrack, 'buffer' | 'id'>>;
+  musicTracksMeta: SerializedMusicMeta[];
   photoClips: SerializedPhotoClip[];
   textOverlays: Array<Omit<TextOverlay, 'id'>>;
+  // Stesso motivo di musicTracksMeta: le clip video non sono incorporabili (potrebbero pesare
+  // centinaia di MB), solo i loro metadati per il riaggancio automatico per nome file.
+  videoClipsMeta: SerializedVideoMeta[];
 }
 
 type ProjectFile = ProjectFileV1 | ProjectFileV2;
@@ -89,7 +104,7 @@ function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement> {
 
 // Converte lo stato di progetto (escluse le tracce GPX, sempre da ricaricare a mano) in un
 // oggetto JSON-serializzabile: le foto sono incorporate come dataURL (in genere poche centinaia
-// di KB l'una), i brani musicali solo come metadati, le tracce solo come promemoria
+// di KB l'una), musica/video solo come metadati, le tracce solo come promemoria
 // nome-file/impostazioni Mezzo/principale (vedi ProjectFileV2).
 export function serializeProject(state: ProjectState): ProjectFileV2 {
   return {
@@ -99,7 +114,12 @@ export function serializeProject(state: ProjectState): ProjectFileV2 {
     video: state.video,
     camera: state.camera,
     map: state.map,
-    tracksMeta: state.tracks.map((t) => ({ fileName: t.fileName, vehicle: t.vehicle, isPrimary: t.isPrimary })),
+    tracksMeta: state.tracks.map((t) => ({
+      fileName: t.fileName,
+      vehicle: t.vehicle,
+      isPrimary: t.isPrimary,
+      maxSpeedExclusions: t.maxSpeedExclusions,
+    })),
     musicVolume: state.musicVolume,
     photoDefaultDuration: state.photoDefaultDuration,
     snapEnabled: state.snapEnabled,
@@ -112,23 +132,28 @@ export function serializeProject(state: ProjectState): ProjectFileV2 {
       dataUrl: photoToDataUrl(p.img),
     })),
     textOverlays: state.textOverlays.map(({ id: _id, ...rest }) => rest),
+    videoClipsMeta: state.videoClips.map(({ id: _id, videoEl: _videoEl, audioBuffer: _audioBuffer, posterDataUrl: _posterDataUrl, ...rest }) => rest),
   };
 }
 
 export interface DeserializedProject {
   data: Partial<Omit<ProjectState, 'tracks' | 'pendingVehicle'>>;
   // Le impostazioni Mezzo salvate non sono un campo diretto di ProjectState (vivono dentro le
-  // tracce, ricaricate a mano una per una): restano qui come promemoria da riapplicare a mano
-  // dopo aver ricaricato ciascun file GPX (nessuna riassociazione automatica).
+  // tracce, ricaricate una per una): il chiamante (ProjectPanel.tsx) le passa a
+  // usePlaybackStore.setExpectedMeta, da cui Sidebar.tsx/MusicPhotosPanel.tsx le leggono per il
+  // riaggancio automatico per nome file al prossimo caricamento di ciascun file GPX/audio/video.
   tracksMeta: SerializedTrackMeta[];
-  skippedMusicNames: string[];
+  musicMeta: SerializedMusicMeta[];
+  videoMeta: SerializedVideoMeta[];
 }
 
 // Ricostruisce lo stato da un file JSON esportato da serializeProject. Le foto vengono
-// ricaricate (decodifica del dataURL); i brani musicali NON vengono ripristinati (nessun audio
-// incorporato) — i loro nomi sono restituiti in skippedMusicNames per informare l'utente.
-// Assegna id nuovi (nextPhotoId/nextTextId) invece di riusare quelli salvati, per evitare
-// collisioni con elementi aggiunti nella sessione corrente dopo il caricamento.
+// ricaricate subito (decodifica del dataURL, nessuna azione utente necessaria); musica e video
+// NON vengono ripristinati subito (nessun file sorgente incorporato) — i loro metadati completi
+// (musicMeta/videoMeta) vengono riapplicati automaticamente non appena l'utente ricarica un file
+// con lo stesso nome (vedi DeserializedProject sopra). Assegna id nuovi (nextPhotoId/nextTextId)
+// invece di riusare quelli salvati, per evitare collisioni con elementi aggiunti nella sessione
+// corrente dopo il caricamento.
 // Accetta anche file v1 (singolo `vehicle`, prima della Fase 5.2 multi-traccia) per compatibilità.
 export async function deserializeProject(json: unknown): Promise<DeserializedProject> {
   const version = (json as { version?: unknown } | null)?.version;
@@ -150,8 +175,12 @@ export async function deserializeProject(json: unknown): Promise<DeserializedPro
 
   const textOverlays: TextOverlay[] = (f.textOverlays ?? []).map((t) => ({ id: nextTextId(), ...t }));
 
+  // maxSpeedExclusions è assente nei file salvati prima di questa modifica (v2 già esistenti):
+  // ?? [] evita un crash a runtime, il campo è opzionale nei dati letti anche se non nel tipo.
   const tracksMeta: SerializedTrackMeta[] =
-    f.version === 1 ? [{ fileName: '', vehicle: f.vehicle, isPrimary: true }] : f.tracksMeta;
+    f.version === 1
+      ? [{ fileName: '', vehicle: f.vehicle, isPrimary: true, maxSpeedExclusions: [] }]
+      : f.tracksMeta.map((t) => ({ ...t, maxSpeedExclusions: t.maxSpeedExclusions ?? [] }));
 
   return {
     data: {
@@ -166,8 +195,10 @@ export async function deserializeProject(json: unknown): Promise<DeserializedPro
       musicTracks: [],
       photoClips,
       textOverlays,
+      videoClips: [],
     },
     tracksMeta,
-    skippedMusicNames: (f.musicTracksMeta ?? []).map((m) => m.name),
+    musicMeta: f.musicTracksMeta ?? [],
+    videoMeta: f.version === 2 ? (f.videoClipsMeta ?? []) : [],
   };
 }

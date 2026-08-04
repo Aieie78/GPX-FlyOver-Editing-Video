@@ -1,16 +1,28 @@
 import { useRef } from 'react';
 import type { ChangeEvent } from 'react';
-import { Download, Upload } from 'lucide-react';
+import { CheckCircle2, Circle, Download, Upload } from 'lucide-react';
 import { deserializeProject, serializeProject } from '../../project/projectFile';
 import { useProjectStore } from '../../store/useProjectStore';
 import { usePlaybackStore } from '../../store/usePlaybackStore';
 
 // Salvataggio/caricamento progetto in JSON (prompt-refactoring.md, Fase 4 gruppo 4). Il Track GPX
-// e i file audio non sono incorporati nel file — vanno sempre ricaricati/riaggiunti a mano dopo
-// il caricamento, come già succede per il Track con l'undo/redo (vedi useProjectStore.ts).
+// e i file audio/video non sono incorporati nel file (potrebbero pesare decine/centinaia di MB) —
+// dopo il caricamento del progetto, ricaricare un file con lo STESSO NOME di uno atteso lo
+// riaggancia automaticamente (posizione/taglio/veicolo/esclusioni bandierina inclusi, vedi
+// usePlaybackStore.expectedTracksMeta/expectedMusicMeta/expectedVideoMeta, consumati da
+// Sidebar.tsx e MusicPhotosPanel.tsx) — un nome diverso viene semplicemente aggiunto come nuovo
+// blocco, come oggi. Le foto (incorporate come dataURL) e il testo (nessun file) sono già
+// ripristinati subito, senza bisogno di ricaricare nulla.
 export function ProjectPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const setStatusMessage = usePlaybackStore((s) => s.setStatusMessage);
+  const expectedTracksMeta = usePlaybackStore((s) => s.expectedTracksMeta);
+  const expectedMusicMeta = usePlaybackStore((s) => s.expectedMusicMeta);
+  const expectedVideoMeta = usePlaybackStore((s) => s.expectedVideoMeta);
+  const setExpectedMeta = usePlaybackStore((s) => s.setExpectedMeta);
+  const tracks = useProjectStore((s) => s.tracks);
+  const musicTracks = useProjectStore((s) => s.musicTracks);
+  const videoClips = useProjectStore((s) => s.videoClips);
 
   const handleSave = () => {
     const state = useProjectStore.getState();
@@ -32,22 +44,35 @@ export function ProjectPanel() {
     if (!file) return;
     try {
       const json = JSON.parse(await file.text());
-      const { data, tracksMeta, skippedMusicNames } = await deserializeProject(json);
+      const { data, tracksMeta, musicMeta, videoMeta } = await deserializeProject(json);
       useProjectStore.getState().loadProjectData(data);
-      const musicNote = skippedMusicNames.length
-        ? ` Brani musicali da riaggiungere manualmente (audio non incluso nel salvataggio): ${skippedMusicNames.join(', ')}.`
+      setExpectedMeta(tracksMeta, musicMeta, videoMeta);
+      const notes: string[] = [];
+      if (tracksMeta.length) notes.push(`${tracksMeta.length} traccia/e GPX`);
+      if (musicMeta.length) notes.push(`${musicMeta.length} brano/i musicale/i`);
+      if (videoMeta.length) notes.push(`${videoMeta.length} clip video`);
+      const note = notes.length
+        ? ` Ricarica gli stessi file (stesso nome) per ${notes.join(', ')}: si riagganciano automaticamente alla posizione/impostazioni salvate — vedi il riepilogo qui sotto.`
         : '';
-      const tracksNote = tracksMeta.length
-        ? ` Tracce da ricaricare, con le impostazioni Mezzo da riconfigurare a mano: ${tracksMeta
-            .map((t) => `${t.fileName || '(nome non salvato)'}${t.isPrimary ? ' [principale]' : ''}`)
-            .join(', ')}.`
-        : '';
-      setStatusMessage(`Progetto caricato.${tracksNote}${musicNote}`);
+      setStatusMessage(`Progetto caricato.${note}`);
     } catch (err) {
       console.error('Errore caricamento progetto', err);
       setStatusMessage(err instanceof Error ? `Impossibile caricare il progetto: ${err.message}` : 'Impossibile caricare il progetto.');
     }
   };
+
+  const trackStatus = expectedTracksMeta.map((t) => ({
+    label: `${t.fileName || '(nome non salvato)'}${t.isPrimary ? ' [principale]' : ''}`,
+    matched: tracks.some((loaded) => loaded.fileName === t.fileName),
+  }));
+  const musicStatus = expectedMusicMeta.map((m) => ({
+    label: m.name,
+    matched: musicTracks.some((loaded) => loaded.name === m.name),
+  }));
+  const videoStatus = expectedVideoMeta.map((v) => ({
+    label: v.name,
+    matched: videoClips.some((loaded) => loaded.name === v.name),
+  }));
 
   return (
     <>
@@ -59,9 +84,30 @@ export function ProjectPanel() {
       </button>
       <input ref={fileInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={handleFileChange} />
       <p className="field-hint">
-        Il salvataggio non include la traccia GPX né i file audio: dopo il caricamento vanno ricaricati/riaggiunti a
-        mano.
+        Il salvataggio non include la traccia GPX né i file audio/video: dopo il caricamento del progetto, ricaricare
+        un file con lo stesso nome lo riaggancia automaticamente. Foto e testo sono già ripristinati subito (nessuna
+        azione necessaria).
       </p>
+      {(trackStatus.length > 0 || musicStatus.length > 0 || videoStatus.length > 0) && (
+        <div className="reattach-summary">
+          <p className="reattach-summary__title">Riepilogo riaggancio file</p>
+          {trackStatus.map((t) => (
+            <p key={`track-${t.label}`} className={`reattach-summary__row${t.matched ? ' reattach-summary__row--ok' : ''}`}>
+              {t.matched ? <CheckCircle2 size={12} /> : <Circle size={12} />} {t.label}
+            </p>
+          ))}
+          {musicStatus.map((m) => (
+            <p key={`music-${m.label}`} className={`reattach-summary__row${m.matched ? ' reattach-summary__row--ok' : ''}`}>
+              {m.matched ? <CheckCircle2 size={12} /> : <Circle size={12} />} {m.label}
+            </p>
+          ))}
+          {videoStatus.map((v) => (
+            <p key={`video-${v.label}`} className={`reattach-summary__row${v.matched ? ' reattach-summary__row--ok' : ''}`}>
+              {v.matched ? <CheckCircle2 size={12} /> : <Circle size={12} />} {v.label}
+            </p>
+          ))}
+        </div>
+      )}
     </>
   );
 }
