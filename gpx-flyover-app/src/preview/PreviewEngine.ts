@@ -2,16 +2,20 @@ import type { Map as MapLibreMap } from 'maplibre-gl';
 import { buildAnimParams, cameraForFrame, initialBearing, stepBearing } from '../camera/camera';
 import { resetMusicAnchor, setMusicGainVolume, stopMusicPreview, syncMusicPreview } from '../audio/musicEngine';
 import { updateRouteDoneUpTo } from '../map/mapSetup';
-import { buildTimeIndex, findPointAtTime, type TimedPoint, type TimeIndexedTrack } from '../geo/geo';
-import { computePathIndex } from '../timeline/timelineMath';
+import { buildTimeIndex, findPointAtTime, getEffectiveMaxSpeedPoint, type TimedPoint, type TimeIndexedTrack } from '../geo/geo';
+import { computePathIndex, computeSlowZone } from '../timeline/timelineMath';
 import { drawAltitudeLine, drawVehicleIcon, vehicleScreenPos } from '../vehicle/vehicleIcon';
 import { drawPhotoCover, getActivePhotoLayers } from '../photos/photoEngine';
 import { computeDuckFactor, drawVideoCover, getActiveVideoClip, syncPreviewVideo } from '../video/videoEngine';
 import { drawLiveStatsBox } from '../stats/liveStatsOverlay';
+import { buildProfileBackground, drawAltitudeProfile, type ProfileBackground } from '../stats/altitudeProfile';
+import { drawMaxSpeedMarker, maxSpeedMarkerScreenPos } from '../stats/maxSpeedMarker';
 import { drawTextOverlay, getActiveTextOverlays } from '../text/textEngine';
 import type {
   AnimParams,
   CameraParams,
+  MaxSpeedMarkerParams,
+  MaxSpeedPoint,
   MusicTrack,
   PhotoClip,
   PlaybackSpeed,
@@ -42,6 +46,7 @@ export interface PreviewEngineDeps {
   getPhotoClips: () => PhotoClip[];
   getVideoClips: () => VideoClip[];
   getTextOverlays: () => TextOverlay[];
+  getMaxSpeedMarker: () => MaxSpeedMarkerParams;
   onTick: (info: PreviewTickInfo) => void;
   onEnded: () => void;
 }
@@ -77,6 +82,13 @@ export class PreviewEngine {
   private state: PreviewState | null = null;
   private rafHandle: number | null = null;
   private drawHandle: number | null = null;
+
+  // Sfondo del profilo altimetrico (buildProfileBackground) — costruito una sola volta e riusato
+  // finché traccia e larghezza del canvas non cambiano, non ad ogni fotogramma (stesso motivo
+  // dell'export: ricostruirlo per ogni frame è lavoro sprecato, vedi altitudeProfile.ts).
+  private profileBg: ProfileBackground | null = null;
+  private profileBgTrackId: number | null = null;
+  private profileBgWidth = 0;
 
   constructor(deps: PreviewEngineDeps) {
     this.deps = deps;
@@ -165,12 +177,14 @@ export class PreviewEngine {
     const s = this.state;
     if (!s) return;
     const clamped = Math.max(0, Math.min(s.totalFrames - 1, Math.round(idx)));
+    const slowZone = computeSlowZone(this.currentMaxSpeedPoint(), this.getPrimary().track.totalDist, this.deps.getMaxSpeedMarker());
     const newPathIndex = computePathIndex(
       clamped / s.fps,
       s.totalFrames,
       s.fps,
       this.deps.getPhotoClips(),
       this.deps.getVideoClips(),
+      slowZone,
     );
     let sb = initialBearing(s);
     for (let k = 1; k <= newPathIndex; k++) sb = stepBearing(sb, k, s);
@@ -194,12 +208,14 @@ export class PreviewEngine {
 
     const p = this.buildParams();
     const newI = Math.max(0, Math.min(p.totalFrames - 1, Math.round(progressFraction * (p.totalFrames - 1))));
+    const slowZone = computeSlowZone(this.currentMaxSpeedPoint(), this.getPrimary().track.totalDist, this.deps.getMaxSpeedMarker());
     const newPathIndex = computePathIndex(
       newI / p.fps,
       p.totalFrames,
       p.fps,
       this.deps.getPhotoClips(),
       this.deps.getVideoClips(),
+      slowZone,
     );
 
     let sb = initialBearing(p);
@@ -236,6 +252,13 @@ export class PreviewEngine {
     return this.getPrimary().id;
   }
 
+  // Punto di velocità massima effettivo della principale, al netto delle esclusioni di "Scarta
+  // questo punto" (pannello Mezzo) — vedi getEffectiveMaxSpeedPoint in geo.ts.
+  private currentMaxSpeedPoint(): MaxSpeedPoint | null {
+    const primary = this.getPrimary();
+    return getEffectiveMaxSpeedPoint(primary.track, primary.maxSpeedExclusions);
+  }
+
   // Pre-indicizza le tracce secondarie per la ricerca per timestamp — una volta per sessione di
   // anteprima (start/onParamsChanged), non per frame (vedi SecondaryTrackIndex).
   private buildSecondaries(): SecondaryTrackIndex[] {
@@ -266,13 +289,16 @@ export class PreviewEngine {
     s.i = clampedI;
 
     // il percorso avanza solo quando NON siamo dentro una foto/clip video (congelato durante la
-    // loro visualizzazione)
+    // loro visualizzazione) o rallentato intorno al punto di velocità massima (slowZone, vedi
+    // computeSlowZone)
+    const slowZone = computeSlowZone(this.currentMaxSpeedPoint(), this.getPrimary().track.totalDist, this.deps.getMaxSpeedMarker());
     const newPathIndex = computePathIndex(
       clampedI / s.fps,
       s.totalFrames,
       s.fps,
       this.deps.getPhotoClips(),
       this.deps.getVideoClips(),
+      slowZone,
     );
     while (s.pathIndex < newPathIndex) {
       s.pathIndex++;
@@ -380,6 +406,28 @@ export class PreviewEngine {
       const secPos = vehicleScreenPos(map, point, s.zoom, s.pitch, secTrack.track.minEle, secTrack.vehicle);
       drawAltitudeLine(this.overlayCtx, secPos.groundX, secPos.groundY, secPos.x, secPos.y, secTrack.vehicle.color, 1);
       drawVehicleIcon(this.overlayCtx, secPos.x, secPos.y, 1, secTrack.vehicle);
+    }
+
+    // bandierina "Velocità max" — posizione geografica fissa, solo traccia principale, sempre
+    // disegnata fin dal caricamento del GPX (non legata al progresso del volo). Punto effettivo:
+    // tiene conto delle esclusioni di "Scarta questo punto" (pannello Mezzo).
+    const maxSpeedPoint = getEffectiveMaxSpeedPoint(primary.track, primary.maxSpeedExclusions);
+    if (maxSpeedPoint) {
+      const marker = this.deps.getMaxSpeedMarker();
+      const maxSpeedPos = maxSpeedMarkerScreenPos(map, maxSpeedPoint, s.zoom, s.pitch, primary.track.minEle, marker);
+      drawMaxSpeedMarker(this.overlayCtx, maxSpeedPos.x, maxSpeedPos.y, overlayCanvas.width, maxSpeedPoint, marker.sizeScale);
+    }
+
+    // profilo altimetrico (sagoma + pallino di avanzamento) — stessa identica logica di disegno
+    // dell'export (drawOverlayFrame/videoExport.ts), così l'anteprima corrisponde al video finale.
+    if (this.deps.getVideoParams().showAltitudeProfile) {
+      if (!this.profileBg || this.profileBgTrackId !== primary.id || this.profileBgWidth !== overlayCanvas.width) {
+        this.profileBg = buildProfileBackground(primary.track, overlayCanvas.width / 1280);
+        this.profileBgTrackId = primary.id;
+        this.profileBgWidth = overlayCanvas.width;
+      }
+      const progress = (pathIndex + 1) / s.totalFrames;
+      drawAltitudeProfile(this.overlayCtx, overlayCanvas.width, primary.track, this.profileBg, progress);
     }
 
     const activeLayers = getActivePhotoLayers(this.deps.getPhotoClips(), i / s.fps);
