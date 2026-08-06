@@ -2,7 +2,7 @@ import type { ChangeEvent } from 'react';
 import { decodeMusicFile } from '../../audio/musicEngine';
 import { buildPhotoClipAppended } from '../../photos/photoEngine';
 import { buildVideoClipAppended } from '../../video/videoEngine';
-import { useProjectStore } from '../../store/useProjectStore';
+import { useProjectStore, getPrimaryTrack } from '../../store/useProjectStore';
 import { usePlaybackStore } from '../../store/usePlaybackStore';
 
 // Port dei controlli musica/foto di gpx-flyover.html:193-201, esteso in Fase 6 con l'upload
@@ -51,11 +51,24 @@ export function MusicPhotosPanel() {
     e.target.value = '';
   };
 
+  // "posizione lungo il percorso" non ha senso senza un percorso: bloccare l'aggiunta invece di
+  // creare un blocco che non corrisponderebbe a nessun punto reale — vedi Fase 2/CLAUDE.md.
+  const requirePrimaryTrack = (): boolean => {
+    if (getPrimaryTrack(useProjectStore.getState())) return true;
+    setStatusMessage('Carica prima una traccia GPX — foto e video si posizionano lungo il percorso.');
+    return false;
+  };
+
   const handlePhotoFiles = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = [...(e.target.files ?? [])];
+    if (files.length > 0 && !requirePrimaryTrack()) {
+      e.target.value = '';
+      return;
+    }
     for (const file of files) {
       try {
-        const clip = await buildPhotoClipAppended(file, useProjectStore.getState().photoClips, photoDefaultDuration);
+        const s = useProjectStore.getState();
+        const clip = await buildPhotoClipAppended(file, s.photoClips, s.videoClips, photoDefaultDuration, s.video.durationSec);
         addPhotoClip(clip);
       } catch (err) {
         console.error('Errore caricamento immagine', file.name, err);
@@ -67,23 +80,27 @@ export function MusicPhotosPanel() {
 
   const handleVideoFiles = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = [...(e.target.files ?? [])];
+    if (files.length > 0 && !requirePrimaryTrack()) {
+      e.target.value = '';
+      return;
+    }
     for (const file of files) {
       try {
-        const totalDur = useProjectStore.getState().video.durationSec;
-        const clip = await buildVideoClipAppended(file, useProjectStore.getState().videoClips, totalDur);
+        const s = useProjectStore.getState();
+        const clip = await buildVideoClipAppended(file, s.photoClips, s.videoClips, s.video.durationSec);
         // Riaggancio automatico per nome file, stesso pattern della musica: se questa clip era
-        // attesa da un "Carica progetto" precedente (stesso nome), riapplica posizione/taglio/
-        // muto salvati invece dei default "nuovo blocco in coda" — il file video sorgente resta
-        // quello appena caricato (mai incorporato nel salvataggio), il taglio salvato viene
-        // limitato alla durata reale nel caso il file ricaricato non sia esattamente identico.
+        // attesa da un "Carica progetto" precedente (stesso nome), riapplica posizione (ora
+        // pathFraction/overlap invece del solo videoStart)/taglio/muto salvati invece dei default
+        // "nuovo blocco in coda" — il file video sorgente resta quello appena caricato (mai
+        // incorporato nel salvataggio), il taglio salvato viene limitato alla durata reale nel
+        // caso il file ricaricato non sia esattamente identico.
         const expected = usePlaybackStore.getState().expectedVideoMeta.find((m) => m.name === file.name);
         const finalClip = expected
           ? {
               ...clip,
-              videoStart: expected.videoStart,
+              ...expected,
               trimStart: Math.min(expected.trimStart, clip.videoEl.duration),
               trimEnd: Math.min(expected.trimEnd, clip.videoEl.duration),
-              muted: expected.muted,
             }
           : clip;
         addVideoClip(finalClip);

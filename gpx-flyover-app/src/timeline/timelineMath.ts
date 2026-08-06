@@ -1,5 +1,14 @@
 import type { MaxSpeedMarkerParams, MaxSpeedPoint, PhotoClip, VideoClip } from '../types/domain';
 
+// Codifica un id "kind+id" (photo/video) in un intero unico — le due sequenze nextPhotoId()/
+// nextVideoId() sono indipendenti e possono collidere (stesso numero per una foto e un video),
+// quindi combinare le due liste in un solo grafo di risoluzione (necessario per la sovrapposizione
+// foto↔video, "vince il video") richiede id davvero univoci prima di passarli a
+// resolvePathAnchoredPositions.
+function encodeClipId(kind: 'photo' | 'video', id: number): number {
+  return kind === 'photo' ? id * 2 : id * 2 + 1;
+}
+
 // Adatta foto+video a un'unica lista di finestre di congelamento {videoStart, duration} — la
 // stessa forma già usata da videoTimeToPathTime, senza doverne riscrivere l'algoritmo (Fase 6,
 // prompt-video-import.md: le clip video congelano il volo esattamente come le foto).
@@ -171,6 +180,135 @@ export function pathFractionToVideoTime(
   return videoTime + (target - flightSoFar);
 }
 
+// Blocco foto/video ancorato a una posizione lungo il percorso (fraction 0..1 di distanza
+// cumulata) invece che a un secondo assoluto — vedi resolvePathAnchoredPositions.
+//
+// overlapOfId/overlapOffsetSec (opzionali) coprono il caso di due blocchi che condividono un
+// tratto di finestra: essendo congelato il percorso durante quel tratto, la fraction NON può da
+// sola distinguere "sovrapposti di 1s" da "sovrapposti di 2s" (la fraction risultante sarebbe
+// identica in entrambi i casi — vedi il commento di resolvePathAnchoredPositions). L'offset è
+// RELATIVO al blocco di riferimento (secondi dopo l'inizio della SUA finestra risolta), non alla
+// timeline assoluta: resta valido anche se la posizione assoluta del riferimento cambia per
+// modifiche altrove nella timeline. pathFraction resta comunque sempre valorizzata anche quando
+// overlapOfId è presente (coincide con quella del riferimento al momento della sovrapposizione) —
+// è l'ancora di ripiego se il riferimento sparisce, vedi sotto.
+export interface PathAnchoredItem {
+  id: number;
+  pathFraction: number; // 0..1 — sempre valido di per sé, anche quando overlapOfId è presente
+  length: number; // durata del congelamento in secondi (photo.duration o video.trimEnd-trimStart)
+  overlapOfId?: number; // id di un altro item DI QUESTO STESSO INSIEME a cui questo blocco si sovrappone
+  overlapOffsetSec?: number; // secondi dopo l'inizio della finestra risolta di overlapOfId (richiesto se overlapOfId è presente)
+}
+
+interface ResolvedRootInput {
+  id: number;
+  pathFraction: number;
+  length: number; // per i blocchi "radice" con figli sovrapposti: la durata dell'INTERO cluster (unione), non solo la propria
+}
+
+// Nucleo invariato della Fase 0: cammina i blocchi in ordine di pathFraction crescente,
+// posizionando ciascuno subito dopo la fine del precedente (mai prima) — vedi il commento esteso
+// di resolvePathAnchoredPositions per il perché non serve iterazione a punto fisso.
+function resolveSequential(
+  items: ResolvedRootInput[],
+  totalDurationSec: number,
+  slowZone: SlowZone | null,
+): Map<number, number> {
+  const totalFrozenTime = items.reduce((sum, it) => sum + it.length, 0);
+  const availableFlightTime = Math.max(0.001, totalDurationSec - totalFrozenTime);
+  const sorted = [...items].sort((a, b) => a.pathFraction - b.pathFraction);
+
+  const resolved = new Map<number, number>();
+  let videoTimeCursor = 0;
+  let flightSoFar = 0;
+  for (const item of sorted) {
+    const target = fractionToRawFlightTime(Math.max(0, Math.min(1, item.pathFraction)), availableFlightTime, slowZone);
+    const need = Math.max(0, target - flightSoFar);
+    const itemStart = videoTimeCursor + need;
+    resolved.set(item.id, itemStart);
+    flightSoFar = target;
+    videoTimeCursor = itemStart + item.length;
+  }
+  return resolved;
+}
+
+// Risolve la posizione in secondi (videoStart) di un insieme di blocchi ancorati al percorso —
+// stesso motore di pathFractionToVideoTime (già usato dal marcatore "Velocità max").
+//
+// Perché non basta chiamare pathFractionToVideoTime singolarmente per ciascun blocco: la sua
+// mappatura fraction→tempo dipende dalle finestre di congelamento di TUTTI i blocchi
+// (freezeWindowsOf), che a loro volta sono definite dal videoStart di ciascun blocco — lo stesso
+// valore che si sta cercando di calcolare (dipendenza circolare). Si risolve percorrendo i blocchi
+// "radice" (senza overlapOfId) in ordine di pathFraction CRESCENTE — l'ordine per fraction
+// coincide sempre con l'ordine per tempo-video, quindi le finestre "prima" di un blocco sono
+// esattamente quelle già risolte nei passi precedenti (resolveSequential, invariata dalla Fase 0:
+// bullet 1 "separati" e 2 "adiacenti" della specifica restano identici a prima).
+//
+// SOVRAPPOSIZIONE (bullet 3, tempo pausa = durata1+durata2-sovrapposizione): la fraction da sola
+// non basta a rappresentarla — durante il congelamento il percorso non avanza per definizione,
+// quindi un blocco "sganciato" dentro la finestra di un altro riceverebbe automaticamente la
+// STESSA identica fraction (la conversione tempo→percorso è costante durante tutto il
+// congelamento), qualunque sia il punto esatto in cui è stato rilasciato: l'informazione "di
+// quanti secondi si sovrappone" andrebbe persa. overlapOfId/overlapOffsetSec la preservano
+// esplicitamente (offset relativo al blocco di riferimento, non alla timeline assoluta — resta
+// valido anche se la posizione assoluta del riferimento cambia altrove). Un blocco con figli
+// sovrapposti viene trattato, ai fini della risoluzione della SEQUENZA (ordine/spaziatura rispetto
+// agli altri blocchi), come un singolo "cluster" la cui lunghezza è l'unione (il proprio + la coda
+// di ciascun figlio che sporge oltre) — mai la somma piena, altrimenti si tornerebbe a "rubare"
+// due volte lo stesso tempo di volo disponibile (esattamente il difetto che l'ancoraggio a
+// percorso doveva eliminare). Il figlio viene poi piazzato di conseguenza, con un semplice
+// riferimento_start + offset.
+//
+// RIPIEGO se il blocco di riferimento è assente da questo stesso insieme (rimosso dalla timeline,
+// oppure — per restare semplici — puntava a sua volta a un altro figlio anziché a una radice:
+// nessuna catena a più livelli per ora): il blocco perde solo il legame esplicito "relativo a X",
+// non la propria posizione fisica — viene trattato come un blocco radice indipendente, usando la
+// PROPRIA pathFraction (che già coincide con quella del riferimento al momento in cui la relazione
+// era stata creata, per il motivo spiegato sopra) esattamente come se overlapOfId non fosse mai
+// stato impostato.
+export function resolvePathAnchoredPositions(
+  items: PathAnchoredItem[],
+  totalDurationSec: number,
+  slowZone: SlowZone | null = null,
+): Map<number, number> {
+  const byId = new Map(items.map((it) => [it.id, it]));
+
+  // Un overlapOfId è "attivo" solo se punta a un item presente in questo insieme che è a sua
+  // volta una radice (non un altro figlio) — altrimenti ripiego: trattato come radice indipendente.
+  const isActiveChild = (it: PathAnchoredItem): boolean => {
+    if (it.overlapOfId == null || it.overlapOffsetSec == null) return false;
+    const target = byId.get(it.overlapOfId);
+    return target != null && !(target.overlapOfId != null && target.overlapOffsetSec != null);
+  };
+
+  const children = items.filter(isActiveChild);
+  const childrenByParent = new Map<number, PathAnchoredItem[]>();
+  for (const c of children) {
+    const list = childrenByParent.get(c.overlapOfId!) ?? [];
+    list.push(c);
+    childrenByParent.set(c.overlapOfId!, list);
+  }
+  const childIds = new Set(children.map((c) => c.id));
+  const roots = items.filter((it) => !childIds.has(it.id));
+
+  const rootInputs: ResolvedRootInput[] = roots.map((root) => {
+    const kids = childrenByParent.get(root.id) ?? [];
+    const clusterSpan = kids.reduce((span, c) => Math.max(span, c.overlapOffsetSec! + c.length), root.length);
+    return { id: root.id, pathFraction: root.pathFraction, length: clusterSpan };
+  });
+
+  const resolvedRoots = resolveSequential(rootInputs, totalDurationSec, slowZone);
+
+  const resolved = new Map<number, number>(resolvedRoots);
+  for (const root of roots) {
+    const rootStart = resolvedRoots.get(root.id)!;
+    for (const c of childrenByParent.get(root.id) ?? []) {
+      resolved.set(c.id, rootStart + c.overlapOffsetSec!);
+    }
+  }
+  return resolved;
+}
+
 export interface RowAssignItem {
   id: number;
   start: number;
@@ -211,4 +349,121 @@ export function computePathIndex(
   const totalDurationSec = totalFrames / fps;
   const pt = videoTimeToPathTime(videoTimeSec, photoClips, totalDurationSec, videoClips, slowZone);
   return Math.max(0, Math.min(totalFrames - 1, Math.round(pt * fps)));
+}
+
+// Risolve in un solo passaggio le posizioni (videoStart, secondi) di foto E video insieme —
+// combinati nello stesso grafo (id codificati con encodeClipId) così una sovrapposizione
+// foto↔video viene contabilizzata correttamente (unione, non doppio conteggio) esattamente come
+// una sovrapposizione foto↔foto o video↔video. Questa è l'UNICA funzione che lo store deve
+// chiamare per tenere PhotoClip.videoStart/VideoClip.videoStart sincronizzati con
+// pathFraction/overlap — vedi resyncPhotoVideoPositions in store/useProjectStore.ts.
+export function resolvePhotoVideoClips(
+  photoClips: PhotoClip[],
+  videoClips: VideoClip[],
+  totalDurationSec: number,
+  slowZone: SlowZone | null = null,
+): { photoClips: PhotoClip[]; videoClips: VideoClip[] } {
+  const items: PathAnchoredItem[] = [
+    ...photoClips.map((p) => ({
+      id: encodeClipId('photo', p.id),
+      pathFraction: p.pathFraction,
+      length: p.duration,
+      overlapOfId: p.overlapOfId != null ? encodeClipId(p.overlapOfKind ?? 'photo', p.overlapOfId) : undefined,
+      overlapOffsetSec: p.overlapOffsetSec,
+    })),
+    ...videoClips.map((c) => ({
+      id: encodeClipId('video', c.id),
+      pathFraction: c.pathFraction,
+      length: c.trimEnd - c.trimStart,
+      overlapOfId: c.overlapOfId != null ? encodeClipId(c.overlapOfKind ?? 'video', c.overlapOfId) : undefined,
+      overlapOffsetSec: c.overlapOffsetSec,
+    })),
+  ];
+  const resolved = resolvePathAnchoredPositions(items, Math.max(0.001, totalDurationSec), slowZone);
+  return {
+    photoClips: photoClips.map((p) => ({ ...p, videoStart: resolved.get(encodeClipId('photo', p.id)) ?? 0 })),
+    videoClips: videoClips.map((c) => ({ ...c, videoStart: resolved.get(encodeClipId('video', c.id)) ?? 0 })),
+  };
+}
+
+export interface OverlapCandidate {
+  id: number;
+  kind: 'photo' | 'video';
+  videoStart: number;
+  length: number;
+}
+
+// Usata dal drag-and-drop (PhotoLane/VideoLane): dato un punto di sgancio in secondi nominali
+// (dopo lo snap), verifica se cade STRETTAMENTE dentro la finestra risolta di un altro blocco già
+// presente — in tal caso il blocco trascinato va ancorato con overlapOfId/overlapOffsetSec invece
+// che con la sola pathFraction (altrimenti la conversione tempo→percorso gli assegnerebbe la
+// stessa fraction del blocco coperto ma perderebbe l'esatto punto di sovrapposizione voluto — vedi
+// il commento di resolvePathAnchoredPositions). Se il punto cade dentro PIÙ finestre (sovrapposizioni
+// annidate), sceglie quella con inizio più antico, semplificazione accettata per questo caso limite.
+export function detectOverlapTarget(
+  droppedStartSec: number,
+  candidates: OverlapCandidate[],
+  excludeId: number,
+  excludeKind: 'photo' | 'video',
+): { id: number; kind: 'photo' | 'video'; offsetSec: number } | null {
+  const inside = candidates
+    .filter((c) => !(c.id === excludeId && c.kind === excludeKind))
+    .filter((c) => droppedStartSec > c.videoStart + 1e-6 && droppedStartSec < c.videoStart + c.length - 1e-6)
+    .sort((a, b) => a.videoStart - b.videoStart);
+  if (inside.length === 0) return null;
+  const target = inside[0];
+  return { id: target.id, kind: target.kind, offsetSec: droppedStartSec - target.videoStart };
+}
+
+export interface DragAnchorResult {
+  pathFraction: number;
+  overlapOfId?: number;
+  overlapOfKind?: 'photo' | 'video';
+  overlapOffsetSec?: number;
+}
+
+// Punto unico richiamato dal drag-and-drop (PhotoLane/VideoLane, ultimo passo dell'handler, DOPO
+// lo snap in secondi nominali) per calcolare l'ancora risultante — riusato da entrambe le corsie
+// per non duplicare la logica di rilevamento sovrapposizione. droppedStartSec è la posizione (in
+// secondi nominali, già passata per lo snap) in cui il blocco è stato rilasciato. photoClips/
+// videoClips sono quelli ATTUALI (prima di applicare questo spostamento) — usati sia per
+// l'individuazione di un'eventuale sovrapposizione (detectOverlapTarget) sia, se non c'è
+// sovrapposizione, per la conversione secondi→percorso (videoTimeToPathTime).
+export function resolveDragAnchor(
+  droppedStartSec: number,
+  excludeId: number,
+  excludeKind: 'photo' | 'video',
+  photoClips: PhotoClip[],
+  videoClips: VideoClip[],
+  totalDurationSec: number,
+  slowZone: SlowZone | null,
+): DragAnchorResult {
+  // Il blocco trascinato va sempre escluso da SÉ STESSO — sia per il rilevamento sovrapposizione
+  // (già gestito da detectOverlapTarget tramite excludeId/excludeKind) sia per la conversione
+  // secondi->percorso qui sotto: includerlo tratterebbe la sua stessa finestra (con il videoStart
+  // ANTECEDENTE al movimento in corso) come una finestra di congelamento indipendente da "saltare",
+  // corrompendo la fraction risultante.
+  const otherPhotoClips = photoClips.filter((p) => !(excludeKind === 'photo' && p.id === excludeId));
+  const otherVideoClips = videoClips.filter((c) => !(excludeKind === 'video' && c.id === excludeId));
+
+  const candidates: OverlapCandidate[] = [
+    ...otherPhotoClips.map((p) => ({ id: p.id, kind: 'photo' as const, videoStart: p.videoStart, length: p.duration })),
+    ...otherVideoClips.map((c) => ({ id: c.id, kind: 'video' as const, videoStart: c.videoStart, length: c.trimEnd - c.trimStart })),
+  ];
+  const overlap = detectOverlapTarget(droppedStartSec, candidates, excludeId, excludeKind);
+  if (overlap) {
+    const targetFraction =
+      overlap.kind === 'photo'
+        ? otherPhotoClips.find((p) => p.id === overlap.id)?.pathFraction
+        : otherVideoClips.find((c) => c.id === overlap.id)?.pathFraction;
+    return {
+      pathFraction: targetFraction ?? 0,
+      overlapOfId: overlap.id,
+      overlapOfKind: overlap.kind,
+      overlapOffsetSec: overlap.offsetSec,
+    };
+  }
+  const safeDuration = Math.max(0.001, totalDurationSec);
+  const pathFraction = videoTimeToPathTime(droppedStartSec, otherPhotoClips, safeDuration, otherVideoClips, slowZone) / safeDuration;
+  return { pathFraction };
 }

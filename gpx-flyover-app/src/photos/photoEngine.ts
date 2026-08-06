@@ -1,4 +1,5 @@
-import type { PhotoClip, PhotoRotation } from '../types/domain';
+import type { PhotoClip, PhotoRotation, VideoClip } from '../types/domain';
+import { videoTimeToPathTime } from '../timeline/timelineMath';
 
 // Port 1:1 da gpx-flyover.html:1050.
 export function loadImage(file: File): Promise<HTMLImageElement> {
@@ -15,29 +16,43 @@ export function nextPhotoId(): number {
   return photoIdSeq++;
 }
 
-// Carica un'immagine e calcola la posizione di attacco predefinita (in coda alle foto esistenti).
-// Port della logica in gpx-flyover.html:1059-1073.
+// Carica un'immagine e calcola la posizione di attacco predefinita (in coda alle foto esistenti),
+// poi la converte in pathFraction — vedi resolvePhotoVideoClips/resolvePathAnchoredPositions
+// (timelineMath.ts) per il perché l'ancoraggio è alla posizione-percorso, non al secondo assoluto.
+// slowZone ignorata qui (null) per la sola scelta EURISTICA del punto di attacco predefinito —
+// approssimazione accettata (prima di questa modifica il posizionamento "in coda" non teneva
+// comunque conto della zona di rallentamento), l'ancoraggio risultante resta comunque valido e
+// coerente indipendentemente da questo. Port della logica in gpx-flyover.html:1059-1073.
 export async function buildPhotoClipAppended(
   file: File,
-  existingClips: PhotoClip[],
+  existingPhotoClips: PhotoClip[],
+  existingVideoClips: VideoClip[],
   defaultDuration: number,
+  totalDurationSec: number,
 ): Promise<PhotoClip> {
   const img = await loadImage(file);
-  const videoStart = existingClips.reduce((max, p) => Math.max(max, p.videoStart + p.duration), 0);
-  return { id: nextPhotoId(), name: file.name, img, videoStart, duration: defaultDuration, rotation: 0 };
+  const videoStart = existingPhotoClips.reduce((max, p) => Math.max(max, p.videoStart + p.duration), 0);
+  const safeDuration = Math.max(0.001, totalDurationSec);
+  const pathFraction = videoTimeToPathTime(videoStart, existingPhotoClips, safeDuration, existingVideoClips, null) / safeDuration;
+  return { id: nextPhotoId(), name: file.name, img, videoStart, pathFraction, duration: defaultDuration, rotation: 0 };
 }
 
 // Carica un'immagine e la posiziona esattamente al punto di riproduzione attuale (pulsante "+"
-// nella corsia). Port della logica in gpx-flyover.html:1079-1095.
+// nella corsia), poi la converte in pathFraction — stessa logica/stessa approssimazione (slowZone
+// null) di buildPhotoClipAppended sopra. Port della logica in gpx-flyover.html:1079-1095.
 export async function buildPhotoClipAtPlayhead(
   file: File,
+  existingPhotoClips: PhotoClip[],
+  existingVideoClips: VideoClip[],
   defaultDuration: number,
   totalDurationSec: number,
   playheadSec: number,
 ): Promise<PhotoClip> {
   const img = await loadImage(file);
   const videoStart = Math.max(0, Math.min(totalDurationSec - defaultDuration, playheadSec));
-  return { id: nextPhotoId(), name: file.name, img, videoStart, duration: defaultDuration, rotation: 0 };
+  const safeDuration = Math.max(0.001, totalDurationSec);
+  const pathFraction = videoTimeToPathTime(videoStart, existingPhotoClips, safeDuration, existingVideoClips, null) / safeDuration;
+  return { id: nextPhotoId(), name: file.name, img, videoStart, pathFraction, duration: defaultDuration, rotation: 0 };
 }
 
 export interface ActivePhoto {

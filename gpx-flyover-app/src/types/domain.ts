@@ -194,11 +194,27 @@ export interface TextOverlay {
 
 export type PhotoRotation = 0 | 90 | 180 | 270;
 
-export interface PhotoClip {
+// overlapOfId/overlapOfKind/overlapOffsetSec: presenti solo quando questo blocco si sovrappone
+// esplicitamente a un altro (vedi resolvePathAnchoredPositions in timeline/timelineMath.ts per il
+// perché servono, oltre alla pathFraction, per rappresentare una sovrapposizione parziale).
+// pathFraction resta comunque sempre valorizzata (coincide con quella del riferimento al momento
+// in cui la relazione è stata creata) — è l'ancora di ripiego se il riferimento sparisce.
+export interface OverlapAnchor {
+  overlapOfId: number;
+  overlapOfKind: 'photo' | 'video';
+  overlapOffsetSec: number;
+}
+
+export interface PhotoClip extends Partial<OverlapAnchor> {
   id: number;
   name: string;
   img: HTMLImageElement;
+  // videoStart: posizione risolta in secondi sulla timeline VIDEO — campo DERIVATO, tenuto
+  // sincronizzato dallo store (resyncPhotoVideoPositions, useProjectStore.ts) ogni volta che
+  // cambiano posizioni/durate/traccia principale/zona di rallentamento. Non scriverlo mai
+  // direttamente: l'ancora vera è pathFraction (+ l'eventuale overlap qui sopra).
   videoStart: number;
+  pathFraction: number; // 0..1, posizione lungo il percorso (fraction di distanza cumulata)
   duration: number; // durata di visualizzazione
   rotation: PhotoRotation; // correzione orientamento, in step di 90°
 }
@@ -208,13 +224,15 @@ export interface PhotoClip {
 // Nessuna correzione di rotazione (assunte già orientate correttamente dai metadati del
 // contenitore) e nessuna dissolvenza incrociata tra clip sovrapposte (semplificazioni accettate
 // per questa prima versione).
-export interface VideoClip {
+export interface VideoClip extends Partial<OverlapAnchor> {
   id: number;
   name: string;
   videoEl: HTMLVideoElement;
   audioBuffer: AudioBuffer | null; // null se il file non ha una traccia audio o la decodifica fallisce
   posterDataUrl: string; // miniatura per il blocco in timeline
-  videoStart: number; // posizione di attacco sulla timeline video
+  // Derivato — stessa nota di PhotoClip.videoStart sopra.
+  videoStart: number;
+  pathFraction: number; // 0..1, posizione lungo il percorso (fraction di distanza cumulata)
   trimStart: number; // secondi, riferiti al file sorgente
   trimEnd: number;
   muted: boolean;

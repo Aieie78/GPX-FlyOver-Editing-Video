@@ -7,6 +7,7 @@ import { nextTrackId } from '../gpx/parseGpx';
 import { nextVideoId } from '../video/videoEngine';
 import { getEffectiveMaxSpeedPoint } from '../geo/geo';
 import { effectiveRouteColor, pickRouteColor } from '../vehicle/routeColor';
+import { computeSlowZone, resolvePhotoVideoClips, videoTimeToPathTime, type SlowZone } from '../timeline/timelineMath';
 import type {
   CameraParams,
   MapParams,
@@ -36,6 +37,35 @@ export function getPrimaryTrack(state: ProjectState): VehicleTrack | undefined {
 // esiste, altrimenti i default in pendingVehicle (nessuna traccia ancora caricata).
 export function getEffectiveVehicle(state: ProjectState): VehicleParams {
   return getPrimaryTrack(state)?.vehicle ?? state.pendingVehicle;
+}
+
+// Zona di rallentamento EFFETTIVA (traccia principale, al netto delle esclusioni) — stessa
+// funzione già usata dal marcatore "Velocità max" (PreviewControls.tsx), qui riusata per tenere
+// sincronizzate le posizioni risolte di foto/video (vedi resyncPhotoVideoPositions sotto): la zona
+// di rallentamento fa parte del calcolo tempo↔percorso, quindi cambia le posizioni risolte di ogni
+// blocco ancorato al percorso anche se nessuna foto/video è stata toccata direttamente.
+function slowZoneOf(tracks: VehicleTrack[], maxSpeedMarker: MaxSpeedMarkerParams): SlowZone | null {
+  const primary = tracks.find((t) => t.isPrimary);
+  if (!primary) return null;
+  const maxSpeedPoint = getEffectiveMaxSpeedPoint(primary.track, primary.maxSpeedExclusions);
+  return computeSlowZone(maxSpeedPoint, primary.track.totalDist, maxSpeedMarker);
+}
+
+// Ricalcola photoClips[].videoStart/videoClips[].videoStart da pathFraction (+ overlap) — va
+// richiamata all'interno di OGNI azione dello store che tocca posizioni/durate di foto/video, la
+// durata totale del video, o qualunque cosa influenzi la zona di rallentamento (marcatore
+// "Velocità max", esclusioni): vedi resolvePhotoVideoClips (timeline/timelineMath.ts) per il
+// motivo (dipendenza circolare pathFraction->videoStart, risolta in un solo passaggio). I
+// photoClips/videoClips passati sono quelli GIÀ AGGIORNATI dall'azione chiamante (dopo add/
+// remove/update), non quelli precedenti allo stesso set().
+function resyncPhotoVideoPositions(
+  photoClips: PhotoClip[],
+  videoClips: VideoClip[],
+  durationSec: number,
+  tracks: VehicleTrack[],
+  maxSpeedMarker: MaxSpeedMarkerParams,
+): { photoClips: PhotoClip[]; videoClips: VideoClip[] } {
+  return resolvePhotoVideoClips(photoClips, videoClips, durationSec, slowZoneOf(tracks, maxSpeedMarker));
 }
 
 interface ProjectActions {
@@ -83,6 +113,13 @@ interface ProjectActions {
   duplicateTextOverlay: (id: number) => void;
   setSnapEnabled: (enabled: boolean) => void;
   loadProjectData: (patch: Partial<Omit<ProjectState, 'tracks'>>) => void;
+  // Rimuove TUTTI i blocchi foto/video ancorati al percorso — usata SOLO dal flusso di conferma
+  // cambio/rimozione traccia principale o segmentMode (src/app/primaryTrackGuard.ts), mai
+  // direttamente dalla UI. Vedi CLAUDE.md/Fase 3: cambiare la traccia principale invalida
+  // l'ancoraggio di ogni foto/video esistente (fraction relativa a un percorso che non è più
+  // quello attivo) — niente "salto silenzioso", i blocchi vengono rimossi esplicitamente dopo
+  // conferma dell'utente, non ripiazzati a caso.
+  clearPathAnchoredBlocks: () => void;
 }
 
 type ProjectStore = ProjectState & ProjectActions;
@@ -183,7 +220,14 @@ export const useProjectStore = create<ProjectStore>()(
         })),
       setSegmentMode: (segmentMode) => set({ segmentMode }),
       setTitle: (title) => set({ title }),
-      updateVideo: (patch) => set((s) => ({ video: { ...s.video, ...patch } })),
+      // durationSec influenza direttamente il calcolo tempo↔percorso (availableFlightTime) —
+      // ogni cambio (anche di altri campi VideoParams, per semplicità: il ricalcolo è a costo
+      // trascurabile) risincronizza le posizioni risolte di foto/video.
+      updateVideo: (patch) =>
+        set((s) => {
+          const video = { ...s.video, ...patch };
+          return { video, ...resyncPhotoVideoPositions(s.photoClips, s.videoClips, video.durationSec, s.tracks, s.maxSpeedMarker) };
+        }),
       updateCamera: (patch) => set((s) => ({ camera: { ...s.camera, ...patch } })),
       updateMap: (patch) => set((s) => ({ map: { ...s.map, ...patch } })),
       // trackId null: nessuna traccia caricata ancora, modifica i default (pendingVehicle).
@@ -209,10 +253,20 @@ export const useProjectStore = create<ProjectStore>()(
             }),
           };
         }),
-      updateMaxSpeedMarker: (patch) => set((s) => ({ maxSpeedMarker: { ...s.maxSpeedMarker, ...patch } })),
+      // La zona di rallentamento (derivata dal marcatore + dal punto di velocità massima
+      // effettivo) fa parte del calcolo tempo↔percorso — cambiarla risincronizza le posizioni
+      // risolte di foto/video, anche se nessuna foto/video è stata toccata direttamente.
+      updateMaxSpeedMarker: (patch) =>
+        set((s) => {
+          const maxSpeedMarker = { ...s.maxSpeedMarker, ...patch };
+          return {
+            maxSpeedMarker,
+            ...resyncPhotoVideoPositions(s.photoClips, s.videoClips, s.video.durationSec, s.tracks, maxSpeedMarker),
+          };
+        }),
       discardMaxSpeedPoint: (trackId) =>
-        set((s) => ({
-          tracks: s.tracks.map((t) => {
+        set((s) => {
+          const tracks = s.tracks.map((t) => {
             if (t.id !== trackId) return t;
             const current = getEffectiveMaxSpeedPoint(t.track, t.maxSpeedExclusions);
             if (!current) return t;
@@ -223,16 +277,19 @@ export const useProjectStore = create<ProjectStore>()(
                 { lat: current.lat, lon: current.lon, radiusM: MAX_SPEED_EXCLUSION_RADIUS_M },
               ],
             };
-          }),
-        })),
+          });
+          return { tracks, ...resyncPhotoVideoPositions(s.photoClips, s.videoClips, s.video.durationSec, tracks, s.maxSpeedMarker) };
+        }),
       resetMaxSpeedExclusions: (trackId) =>
-        set((s) => ({
-          tracks: s.tracks.map((t) => (t.id === trackId ? { ...t, maxSpeedExclusions: [] } : t)),
-        })),
+        set((s) => {
+          const tracks = s.tracks.map((t) => (t.id === trackId ? { ...t, maxSpeedExclusions: [] } : t));
+          return { tracks, ...resyncPhotoVideoPositions(s.photoClips, s.videoClips, s.video.durationSec, tracks, s.maxSpeedMarker) };
+        }),
       setMaxSpeedExclusions: (trackId, exclusions) =>
-        set((s) => ({
-          tracks: s.tracks.map((t) => (t.id === trackId ? { ...t, maxSpeedExclusions: exclusions } : t)),
-        })),
+        set((s) => {
+          const tracks = s.tracks.map((t) => (t.id === trackId ? { ...t, maxSpeedExclusions: exclusions } : t));
+          return { tracks, ...resyncPhotoVideoPositions(s.photoClips, s.videoClips, s.video.durationSec, tracks, s.maxSpeedMarker) };
+        }),
       setMusicVolume: (musicVolume) => set({ musicVolume }),
       addMusicTrack: (track) => set((s) => ({ musicTracks: [...s.musicTracks, track] })),
       updateMusicTrack: (id, patch) =>
@@ -269,51 +326,115 @@ export const useProjectStore = create<ProjectStore>()(
           };
         }),
       setPhotoDefaultDuration: (photoDefaultDuration) => set({ photoDefaultDuration }),
-      addPhotoClip: (clip) => set((s) => ({ photoClips: [...s.photoClips, clip] })),
+      addPhotoClip: (clip) =>
+        set((s) => {
+          const photoClips = [...s.photoClips, clip];
+          return resyncPhotoVideoPositions(photoClips, s.videoClips, s.video.durationSec, s.tracks, s.maxSpeedMarker);
+        }),
       updatePhotoClip: (id, patch) =>
-        set((s) => ({
-          photoClips: s.photoClips.map((p) => (p.id === id ? { ...p, ...patch } : p)),
-        })),
+        set((s) => {
+          const photoClips = s.photoClips.map((p) => (p.id === id ? { ...p, ...patch } : p));
+          return resyncPhotoVideoPositions(photoClips, s.videoClips, s.video.durationSec, s.tracks, s.maxSpeedMarker);
+        }),
       removePhotoClip: (id) =>
-        set((s) => ({ photoClips: s.photoClips.filter((p) => p.id !== id) })),
+        set((s) => {
+          const photoClips = s.photoClips.filter((p) => p.id !== id);
+          return resyncPhotoVideoPositions(photoClips, s.videoClips, s.video.durationSec, s.tracks, s.maxSpeedMarker);
+        }),
+      // Nominal-seconds -> pathFraction: usa la posizione RISOLTA attuale di p (p.videoStart, già
+      // sincronizzata dallo store) per calcolare dove piazzare la copia in secondi (stessa logica
+      // di sempre — subito dopo l'originale), poi converte quel secondo in pathFraction con la
+      // configurazione ATTUALE (prima dell'inserimento) di foto/video. La copia non eredita
+      // relazioni di sovrapposizione dall'originale (overlapOfId pulito): parte come blocco
+      // indipendente, coerente con "subito dopo la fine dell'originale".
       duplicatePhotoClip: (id) =>
         set((s) => {
           const p = s.photoClips.find((x) => x.id === id);
           if (!p) return {};
-          const videoStart = Math.min(Math.max(0, s.video.durationSec - p.duration), p.videoStart + p.duration);
-          return { photoClips: [...s.photoClips, { ...p, id: nextPhotoId(), videoStart }] };
+          const durationSec = s.video.durationSec;
+          const videoStart = Math.min(Math.max(0, durationSec - p.duration), p.videoStart + p.duration);
+          const slowZone = slowZoneOf(s.tracks, s.maxSpeedMarker);
+          const safeDuration = Math.max(0.001, durationSec);
+          const pathFraction = videoTimeToPathTime(videoStart, s.photoClips, safeDuration, s.videoClips, slowZone) / safeDuration;
+          const newClip: PhotoClip = {
+            ...p,
+            id: nextPhotoId(),
+            videoStart,
+            pathFraction,
+            overlapOfId: undefined,
+            overlapOfKind: undefined,
+            overlapOffsetSec: undefined,
+          };
+          const photoClips = [...s.photoClips, newClip];
+          return resyncPhotoVideoPositions(photoClips, s.videoClips, durationSec, s.tracks, s.maxSpeedMarker);
         }),
+      // atSec è un secondo nominale (playhead) — stessa logica di taglio di sempre sul secondo
+      // "risolto" attuale, poi il pezzo nuovo (second) viene ri-ancorato in pathFraction a quello
+      // stesso secondo, come blocco indipendente (nessuna relazione di sovrapposizione ereditata).
       splitPhotoClipAt: (id, atSec) =>
         set((s) => {
           const p = s.photoClips.find((x) => x.id === id);
           if (!p) return {};
           const cutOffset = atSec - p.videoStart;
           if (cutOffset <= 0.15 || cutOffset >= p.duration - 0.15) return {};
-          const second: PhotoClip = { ...p, id: nextPhotoId(), videoStart: atSec, duration: p.duration - cutOffset };
-          return {
-            photoClips: [
-              ...s.photoClips.map((x) => (x.id === id ? { ...x, duration: cutOffset } : x)),
-              second,
-            ],
+          const durationSec = s.video.durationSec;
+          const slowZone = slowZoneOf(s.tracks, s.maxSpeedMarker);
+          const safeDuration = Math.max(0.001, durationSec);
+          const secondPathFraction = videoTimeToPathTime(atSec, s.photoClips, safeDuration, s.videoClips, slowZone) / safeDuration;
+          const second: PhotoClip = {
+            ...p,
+            id: nextPhotoId(),
+            videoStart: atSec,
+            pathFraction: secondPathFraction,
+            duration: p.duration - cutOffset,
+            overlapOfId: undefined,
+            overlapOfKind: undefined,
+            overlapOffsetSec: undefined,
           };
+          const photoClips = [...s.photoClips.map((x) => (x.id === id ? { ...x, duration: cutOffset } : x)), second];
+          return resyncPhotoVideoPositions(photoClips, s.videoClips, durationSec, s.tracks, s.maxSpeedMarker);
         }),
-      addVideoClip: (clip) => set((s) => ({ videoClips: [...s.videoClips, clip] })),
+      addVideoClip: (clip) =>
+        set((s) => {
+          const videoClips = [...s.videoClips, clip];
+          return resyncPhotoVideoPositions(s.photoClips, videoClips, s.video.durationSec, s.tracks, s.maxSpeedMarker);
+        }),
       updateVideoClip: (id, patch) =>
-        set((s) => ({
-          videoClips: s.videoClips.map((c) => (c.id === id ? { ...c, ...patch } : c)),
-        })),
+        set((s) => {
+          const videoClips = s.videoClips.map((c) => (c.id === id ? { ...c, ...patch } : c));
+          return resyncPhotoVideoPositions(s.photoClips, videoClips, s.video.durationSec, s.tracks, s.maxSpeedMarker);
+        }),
       removeVideoClip: (id) =>
-        set((s) => ({ videoClips: s.videoClips.filter((c) => c.id !== id) })),
+        set((s) => {
+          const videoClips = s.videoClips.filter((c) => c.id !== id);
+          return resyncPhotoVideoPositions(s.photoClips, videoClips, s.video.durationSec, s.tracks, s.maxSpeedMarker);
+        }),
+      // Stessa logica di duplicatePhotoClip sopra, adattata al video (lunghezza = trimEnd-trimStart).
       duplicateVideoClip: (id) =>
         set((s) => {
           const c = s.videoClips.find((x) => x.id === id);
           if (!c) return {};
+          const durationSec = s.video.durationSec;
           const length = c.trimEnd - c.trimStart;
-          const videoStart = Math.min(Math.max(0, s.video.durationSec - length), c.videoStart + length);
-          return { videoClips: [...s.videoClips, { ...c, id: nextVideoId(), videoStart }] };
+          const videoStart = Math.min(Math.max(0, durationSec - length), c.videoStart + length);
+          const slowZone = slowZoneOf(s.tracks, s.maxSpeedMarker);
+          const safeDuration = Math.max(0.001, durationSec);
+          const pathFraction = videoTimeToPathTime(videoStart, s.photoClips, safeDuration, s.videoClips, slowZone) / safeDuration;
+          const newClip: VideoClip = {
+            ...c,
+            id: nextVideoId(),
+            videoStart,
+            pathFraction,
+            overlapOfId: undefined,
+            overlapOfKind: undefined,
+            overlapOffsetSec: undefined,
+          };
+          const videoClips = [...s.videoClips, newClip];
+          return resyncPhotoVideoPositions(s.photoClips, videoClips, durationSec, s.tracks, s.maxSpeedMarker);
         }),
       // Taglia una clip nel punto atSec in due clip distinte, come splitMusicTrackAt — riferiscono
-      // lo stesso <video>/AudioBuffer, cambia solo il ritaglio (trimStart/trimEnd) e la posizione.
+      // lo stesso <video>/AudioBuffer, cambia solo il ritaglio (trimStart/trimEnd); il pezzo nuovo
+      // viene ri-ancorato in pathFraction come blocco indipendente (stessa logica di splitPhotoClipAt).
       splitVideoClipAt: (id, atSec) =>
         set((s) => {
           const c = s.videoClips.find((x) => x.id === id);
@@ -321,14 +442,23 @@ export const useProjectStore = create<ProjectStore>()(
           const length = c.trimEnd - c.trimStart;
           const cutOffset = atSec - c.videoStart;
           if (cutOffset <= 0.15 || cutOffset >= length - 0.15) return {};
+          const durationSec = s.video.durationSec;
           const cutTrim = c.trimStart + cutOffset;
-          const second: VideoClip = { ...c, id: nextVideoId(), videoStart: atSec, trimStart: cutTrim };
-          return {
-            videoClips: [
-              ...s.videoClips.map((x) => (x.id === id ? { ...x, trimEnd: cutTrim } : x)),
-              second,
-            ],
+          const slowZone = slowZoneOf(s.tracks, s.maxSpeedMarker);
+          const safeDuration = Math.max(0.001, durationSec);
+          const secondPathFraction = videoTimeToPathTime(atSec, s.photoClips, safeDuration, s.videoClips, slowZone) / safeDuration;
+          const second: VideoClip = {
+            ...c,
+            id: nextVideoId(),
+            videoStart: atSec,
+            pathFraction: secondPathFraction,
+            trimStart: cutTrim,
+            overlapOfId: undefined,
+            overlapOfKind: undefined,
+            overlapOffsetSec: undefined,
           };
+          const videoClips = [...s.videoClips.map((x) => (x.id === id ? { ...x, trimEnd: cutTrim } : x)), second];
+          return resyncPhotoVideoPositions(s.photoClips, videoClips, durationSec, s.tracks, s.maxSpeedMarker);
         }),
       addTextOverlay: (text, videoStart, duration) => {
         const id = nextTextId();
@@ -350,8 +480,16 @@ export const useProjectStore = create<ProjectStore>()(
         }),
       setSnapEnabled: (snapEnabled) => set({ snapEnabled }),
       // Applica in blocco i dati di un progetto caricato da JSON (project/projectFile.ts) —
-      // le tracce GPX restano fuori: vanno sempre ricaricate a mano, come per l'undo/redo.
-      loadProjectData: (patch) => set(patch),
+      // le tracce GPX restano fuori: vanno sempre ricaricate a mano, come per l'undo/redo. Le
+      // foto arrivano con pathFraction già valorizzata ma videoStart ancora segnaposto (0): va
+      // risincronizzato subito, altrimenti resterebbero visivamente ammassate all'inizio della
+      // timeline finché non scatta un altro resync qualsiasi.
+      loadProjectData: (patch) =>
+        set((s) => {
+          const next = { ...s, ...patch };
+          return { ...patch, ...resyncPhotoVideoPositions(next.photoClips, next.videoClips, next.video.durationSec, next.tracks, next.maxSpeedMarker) };
+        }),
+      clearPathAnchoredBlocks: () => set({ photoClips: [], videoClips: [] }),
     }),
     {
       partialize: (state) => {

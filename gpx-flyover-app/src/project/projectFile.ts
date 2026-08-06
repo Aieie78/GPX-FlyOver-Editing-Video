@@ -1,5 +1,6 @@
 import { nextPhotoId } from '../photos/photoEngine';
 import { nextTextId } from '../text/textEngine';
+import { videoTimeToPathTime } from '../timeline/timelineMath';
 import type {
   CameraParams,
   MapParams,
@@ -14,9 +15,25 @@ import type {
   VideoParams,
 } from '../types/domain';
 
-const PROJECT_FILE_VERSION = 2;
+const PROJECT_FILE_VERSION = 3;
 
-interface SerializedPhotoClip {
+// v3 (Fase 2, ancoraggio al percorso): pathFraction sostituisce videoStart come dato salvato per
+// le foto — videoStart resta un campo derivato, non ha senso persisterlo (vedi PhotoClip in
+// types/domain.ts). overlapOfId/overlapOfKind/overlapOffsetSec presenti solo per i blocchi
+// sovrapposti (vedi resolvePathAnchoredPositions, timeline/timelineMath.ts).
+interface SerializedPhotoClipV3 {
+  name: string;
+  pathFraction: number;
+  overlapOfId?: number;
+  overlapOfKind?: 'photo' | 'video';
+  overlapOffsetSec?: number;
+  duration: number;
+  rotation: PhotoClip['rotation'];
+  dataUrl: string;
+}
+
+// Formato v1/v2 (ancoraggio a tempo assoluto) — letto ancora per compatibilità, mai più scritto.
+interface SerializedPhotoClipLegacy {
   name: string;
   videoStart: number;
   duration: number;
@@ -56,7 +73,7 @@ interface ProjectFileV1 {
   photoDefaultDuration: number;
   snapEnabled: boolean;
   musicTracksMeta: SerializedMusicMeta[];
-  photoClips: SerializedPhotoClip[];
+  photoClips: SerializedPhotoClipLegacy[];
   textOverlays: Array<Omit<TextOverlay, 'id'>>;
 }
 
@@ -75,14 +92,32 @@ interface ProjectFileV2 {
   // MB in base64 per brano) — servono solo come promemoria di quali brani riaggiungere a mano
   // dalla sezione Musica & Foto dopo il caricamento.
   musicTracksMeta: SerializedMusicMeta[];
-  photoClips: SerializedPhotoClip[];
+  photoClips: SerializedPhotoClipLegacy[];
   textOverlays: Array<Omit<TextOverlay, 'id'>>;
   // Stesso motivo di musicTracksMeta: le clip video non sono incorporabili (potrebbero pesare
   // centinaia di MB), solo i loro metadati per il riaggancio automatico per nome file.
   videoClipsMeta: SerializedVideoMeta[];
 }
 
-type ProjectFile = ProjectFileV1 | ProjectFileV2;
+interface ProjectFileV3 {
+  version: 3;
+  title: string;
+  segmentMode: SegmentMode;
+  video: VideoParams;
+  camera: CameraParams;
+  map: MapParams;
+  tracksMeta: SerializedTrackMeta[];
+  musicVolume: number;
+  photoDefaultDuration: number;
+  snapEnabled: boolean;
+  musicTracksMeta: SerializedMusicMeta[];
+  // pathFraction al posto di videoStart — vedi SerializedPhotoClipV3.
+  photoClips: SerializedPhotoClipV3[];
+  textOverlays: Array<Omit<TextOverlay, 'id'>>;
+  videoClipsMeta: SerializedVideoMeta[];
+}
+
+type ProjectFile = ProjectFileV1 | ProjectFileV2 | ProjectFileV3;
 
 function photoToDataUrl(img: HTMLImageElement): string {
   const canvas = document.createElement('canvas');
@@ -104,9 +139,11 @@ function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement> {
 
 // Converte lo stato di progetto (escluse le tracce GPX, sempre da ricaricare a mano) in un
 // oggetto JSON-serializzabile: le foto sono incorporate come dataURL (in genere poche centinaia
-// di KB l'una), musica/video solo come metadati, le tracce solo come promemoria
-// nome-file/impostazioni Mezzo/principale (vedi ProjectFileV2).
-export function serializeProject(state: ProjectState): ProjectFileV2 {
+// di KB l'una) e RESTANO ripristinate subito al caricamento (vedi deserializeProject) — solo la
+// LORO POSIZIONE è ora pathFraction invece di videoStart (Fase 2, ancoraggio al percorso).
+// Musica/video restano solo metadati, le tracce solo promemoria nome-file/impostazioni Mezzo/
+// principale (vedi ProjectFileV3).
+export function serializeProject(state: ProjectState): ProjectFileV3 {
   return {
     version: PROJECT_FILE_VERSION,
     title: state.title,
@@ -126,7 +163,10 @@ export function serializeProject(state: ProjectState): ProjectFileV2 {
     musicTracksMeta: state.musicTracks.map(({ buffer: _buffer, id: _id, ...rest }) => rest),
     photoClips: state.photoClips.map((p) => ({
       name: p.name,
-      videoStart: p.videoStart,
+      pathFraction: p.pathFraction,
+      overlapOfId: p.overlapOfId,
+      overlapOfKind: p.overlapOfKind,
+      overlapOffsetSec: p.overlapOffsetSec,
       duration: p.duration,
       rotation: p.rotation,
       dataUrl: photoToDataUrl(p.img),
@@ -147,26 +187,64 @@ export interface DeserializedProject {
   videoMeta: SerializedVideoMeta[];
 }
 
-// Ricostruisce lo stato da un file JSON esportato da serializeProject. Le foto vengono
-// ricaricate subito (decodifica del dataURL, nessuna azione utente necessaria); musica e video
-// NON vengono ripristinati subito (nessun file sorgente incorporato) — i loro metadati completi
-// (musicMeta/videoMeta) vengono riapplicati automaticamente non appena l'utente ricarica un file
-// con lo stesso nome (vedi DeserializedProject sopra). Assegna id nuovi (nextPhotoId/nextTextId)
-// invece di riusare quelli salvati, per evitare collisioni con elementi aggiunti nella sessione
-// corrente dopo il caricamento.
-// Accetta anche file v1 (singolo `vehicle`, prima della Fase 5.2 multi-traccia) per compatibilità.
+// Converte le foto di un file v1/v2 (ancorate a videoStart in secondi) in pathFraction — NON
+// serve un GPX già caricato: la conversione tempo->percorso (videoTimeToPathTime) dipende solo
+// dalla configurazione di congelamento salvata nello STESSO file (gli altri videoStart/duration
+// di foto e video, tutti già noti) e da video.durationSec, mai dalla geometria della traccia in
+// sé (la zona di rallentamento è l'unica eccezione, ignorata qui — slowZone null — con la stessa
+// approssimazione già accettata per il posizionamento predefinito di nuovi blocchi, vedi
+// photoEngine.ts/videoEngine.ts). Per questo le foto restano ripristinate SUBITO al caricamento
+// del progetto, come sempre — a differenza di musica/video non serve alcun riaggancio differito
+// per la loro posizione (deviazione dal piano originale concordato: il riaggancio differito era
+// stato accettato perché ritenuto necessario, ma la conversione non richiede affatto un GPX
+// caricato — evitare una regressione UX non necessaria).
+function migrateLegacyPhotoFractions(
+  legacyPhotos: SerializedPhotoClipLegacy[],
+  legacyVideoMeta: SerializedVideoMeta[],
+  totalDurationSec: number,
+): number[] {
+  const safeDuration = Math.max(0.001, totalDurationSec);
+  // Solo i campi letti da freezeWindowsOf (videoStart/duration per le foto, videoStart/trimStart/
+  // trimEnd per i video) contano per la conversione — cast mirato, mai esposto all'esterno.
+  const photoWindows = legacyPhotos.map((p) => ({ videoStart: p.videoStart, duration: p.duration })) as unknown as PhotoClip[];
+  const videoWindows = legacyVideoMeta.map((c) => ({
+    videoStart: c.videoStart,
+    trimStart: c.trimStart,
+    trimEnd: c.trimEnd,
+  })) as unknown as VideoClip[];
+  return legacyPhotos.map((p) => videoTimeToPathTime(p.videoStart, photoWindows, safeDuration, videoWindows, null) / safeDuration);
+}
+
+// Ricostruisce lo stato da un file JSON esportato da serializeProject. Le foto vengono ricaricate
+// subito (decodifica del dataURL, nessuna azione utente necessaria — vedi
+// migrateLegacyPhotoFractions sopra per il perché questo vale anche per i file v1/v2); musica e
+// video NON vengono ripristinati subito (nessun file sorgente incorporato) — i loro metadati
+// completi (musicMeta/videoMeta) vengono riapplicati automaticamente non appena l'utente ricarica
+// un file con lo stesso nome (vedi DeserializedProject sopra). Assegna id nuovi (nextPhotoId/
+// nextTextId) invece di riusare quelli salvati, per evitare collisioni con elementi aggiunti nella
+// sessione corrente dopo il caricamento.
+// Accetta anche file v1/v2 (prima dell'ancoraggio al percorso) per compatibilità.
 export async function deserializeProject(json: unknown): Promise<DeserializedProject> {
   const version = (json as { version?: unknown } | null)?.version;
-  if (!json || typeof json !== 'object' || (version !== 1 && version !== 2)) {
+  if (!json || typeof json !== 'object' || (version !== 1 && version !== 2 && version !== 3)) {
     throw new Error('File di progetto non valido o di una versione non supportata.');
   }
   const f = json as ProjectFile;
 
+  const legacyPhotoFractions =
+    f.version === 1 || f.version === 2
+      ? migrateLegacyPhotoFractions(f.photoClips ?? [], f.version === 2 ? (f.videoClipsMeta ?? []) : [], f.video.durationSec)
+      : null;
+
   const photoClips: PhotoClip[] = await Promise.all(
-    (f.photoClips ?? []).map(async (p) => ({
+    (f.photoClips ?? []).map(async (p, i) => ({
       id: nextPhotoId(),
       name: p.name,
-      videoStart: p.videoStart,
+      videoStart: 0, // derivato — risincronizzato dallo store subito dopo il caricamento (loadProjectData)
+      pathFraction: legacyPhotoFractions ? legacyPhotoFractions[i] : (p as SerializedPhotoClipV3).pathFraction,
+      overlapOfId: f.version === 3 ? (p as SerializedPhotoClipV3).overlapOfId : undefined,
+      overlapOfKind: f.version === 3 ? (p as SerializedPhotoClipV3).overlapOfKind : undefined,
+      overlapOffsetSec: f.version === 3 ? (p as SerializedPhotoClipV3).overlapOffsetSec : undefined,
       duration: p.duration,
       rotation: p.rotation,
       img: await loadImageFromDataUrl(p.dataUrl),
@@ -199,6 +277,6 @@ export async function deserializeProject(json: unknown): Promise<DeserializedPro
     },
     tracksMeta,
     musicMeta: f.musicTracksMeta ?? [],
-    videoMeta: f.version === 2 ? (f.videoClipsMeta ?? []) : [],
+    videoMeta: f.version === 2 || f.version === 3 ? (f.videoClipsMeta ?? []) : [],
   };
 }

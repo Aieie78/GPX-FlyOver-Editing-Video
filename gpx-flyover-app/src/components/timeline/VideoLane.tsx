@@ -4,9 +4,10 @@ import { Film, Plus, X } from 'lucide-react';
 import { getSessionEngine } from '../../app/flyoverSession';
 import { fmtMinSec } from '../../audio/musicEngine';
 import { buildVideoClipAtPlayhead } from '../../video/videoEngine';
-import { assignLaneRows, snapValue } from '../../timeline/timelineMath';
+import { assignLaneRows, resolveDragAnchor, snapValue } from '../../timeline/timelineMath';
+import { useSlowZone } from '../../timeline/useSlowZone';
 import { useTimelineRowScroll } from '../../timeline/useTimelineRowScroll';
-import { useProjectStore } from '../../store/useProjectStore';
+import { useProjectStore, getPrimaryTrack } from '../../store/useProjectStore';
 import { usePlaybackStore } from '../../store/usePlaybackStore';
 import { useTimelineSelectionStore } from '../../store/useTimelineSelectionStore';
 import type { VideoClip } from '../../types/domain';
@@ -21,6 +22,7 @@ export function VideoLane() {
   const laneRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoClips = useProjectStore((s) => s.videoClips);
+  const photoClips = useProjectStore((s) => s.photoClips);
   const addVideoClip = useProjectStore((s) => s.addVideoClip);
   const updateVideoClip = useProjectStore((s) => s.updateVideoClip);
   const removeVideoClip = useProjectStore((s) => s.removeVideoClip);
@@ -31,6 +33,20 @@ export function VideoLane() {
   const selection = useTimelineSelectionStore((s) => s.selection);
   const selectClip = useTimelineSelectionStore((s) => s.select);
   const { scrollRef, onScroll, onWheel, zoom } = useTimelineRowScroll();
+  const slowZone = useSlowZone();
+
+  // Vedi PhotoLane.tsx: stessa logica, adattata al video — videoStart resta un campo derivato,
+  // mai scritto direttamente.
+  const applyResolvedStart = (clip: VideoClip, newStartSec: number, extraPatch: Partial<VideoClip> = {}) => {
+    const anchor = resolveDragAnchor(newStartSec, clip.id, 'video', photoClips, videoClips, totalDur, slowZone);
+    updateVideoClip(clip.id, {
+      ...extraPatch,
+      pathFraction: anchor.pathFraction,
+      overlapOfId: anchor.overlapOfId,
+      overlapOfKind: anchor.overlapOfKind,
+      overlapOffsetSec: anchor.overlapOffsetSec,
+    });
+  };
 
   const startDrag = (e: ReactMouseEvent, clip: VideoClip, mode: DragMode) => {
     e.preventDefault();
@@ -52,7 +68,8 @@ export function VideoLane() {
         const length = orig.trimEnd - orig.trimStart;
         let newStart = Math.max(0, Math.min(totalDur - length, orig.videoStart + dxSec));
         newStart = snapValue(newStart, [...snapCandidates, ...snapCandidates.map((c) => c - length)], snapThreshold);
-        updateVideoClip(clip.id, { videoStart: Math.max(0, Math.min(totalDur - length, newStart)) });
+        newStart = Math.max(0, Math.min(totalDur - length, newStart));
+        applyResolvedStart(clip, newStart);
       } else if (mode === 'left') {
         // ancora il punto finale (videoStart+length e trimEnd), sposta l'inizio
         const endAnchorVideo = orig.videoStart + (orig.trimEnd - orig.trimStart);
@@ -64,7 +81,7 @@ export function VideoLane() {
         const newLength = orig.trimEnd - newTrimStart;
         let newVideoStart = endAnchorVideo - newLength;
         if (newVideoStart < 0) newVideoStart = 0;
-        updateVideoClip(clip.id, { trimStart: newTrimStart, videoStart: newVideoStart });
+        applyResolvedStart(clip, newVideoStart, { trimStart: newTrimStart });
       } else {
         // ancora inizio (videoStart, trimStart), estende/riduce la fine
         const rawEndVideo = snapValue(
@@ -111,8 +128,12 @@ export function VideoLane() {
   const handleAddClick = () => fileInputRef.current?.click();
 
   const addFileAt = async (file: File, atSec: number) => {
+    if (!getPrimaryTrack(useProjectStore.getState())) {
+      setStatusMessage('Carica prima una traccia GPX — foto e video si posizionano lungo il percorso.');
+      return;
+    }
     try {
-      const clip = await buildVideoClipAtPlayhead(file, totalDur, atSec);
+      const clip = await buildVideoClipAtPlayhead(file, photoClips, videoClips, totalDur, atSec);
       addVideoClip(clip);
       // Se l'anteprima è aperta e ferma, nulla ridisegna da solo il frame corrente al variare
       // delle clip (lo store non è osservato per questo, a differenza di camera/video params in

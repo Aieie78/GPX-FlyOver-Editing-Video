@@ -2,6 +2,8 @@ import { AlertTriangle, Info, Lightbulb, Trash2 } from 'lucide-react';
 import { fmtDuration, getEffectiveMaxSpeedPoint } from '../../geo/geo';
 import { useProjectStore } from '../../store/useProjectStore';
 import { computeSlowZone, slowZoneExtraSeconds } from '../../timeline/timelineMath';
+import { requestRemoveTrack, requestSetPrimaryTrack, requestSetSegmentMode } from '../../app/primaryTrackGuard';
+import { ConfirmPrimaryChangeDialog } from './ConfirmPrimaryChangeDialog';
 import type { SegmentMode, VehicleTrack } from '../../types/domain';
 
 interface GpxSourcePanelProps {
@@ -23,7 +25,6 @@ function TrackStats({ track, isSelected, onSelect, onRemove }: {
   onSelect: () => void;
   onRemove: () => void;
 }) {
-  const setPrimaryTrack = useProjectStore((s) => s.setPrimaryTrack);
   const t = track.track;
   return (
     <div className={`gpx-track-row${isSelected ? ' gpx-track-row--selected' : ''}`} onClick={onSelect}>
@@ -41,7 +42,12 @@ function TrackStats({ track, isSelected, onSelect, onRemove }: {
       <b>{track.fileName}</b>
       <br />
       <label className="gpx-track-row__primary" onClick={(e) => e.stopPropagation()}>
-        <input type="radio" name="primary-track" checked={track.isPrimary} onChange={() => setPrimaryTrack(track.id)} />
+        <input
+          type="radio"
+          name="primary-track"
+          checked={track.isPrimary}
+          onChange={() => requestSetPrimaryTrack(track.id, track.fileName)}
+        />
         principale
       </label>
       <br />
@@ -104,9 +110,7 @@ export function GpxSourcePanel({
   onSelectTrack,
 }: GpxSourcePanelProps) {
   const segmentMode = useProjectStore((s) => s.segmentMode);
-  const setSegmentMode = useProjectStore((s) => s.setSegmentMode);
   const tracks = useProjectStore((s) => s.tracks);
-  const removeTrack = useProjectStore((s) => s.removeTrack);
   const title = useProjectStore((s) => s.title);
   const setTitle = useProjectStore((s) => s.setTitle);
   const photoClips = useProjectStore((s) => s.photoClips);
@@ -139,7 +143,7 @@ export function GpxSourcePanel({
           <Info size={10} />
         </i>
       </label>
-      <select value={segmentMode} onChange={(e) => setSegmentMode(e.target.value as SegmentMode)}>
+      <select value={segmentMode} onChange={(e) => requestSetSegmentMode(e.target.value as SegmentMode)}>
         <option value="longest">Usa solo il segmento più lungo</option>
         <option value="concat">Concatena tutti i segmenti in ordine</option>
       </select>
@@ -184,11 +188,12 @@ export function GpxSourcePanel({
               track={t}
               isSelected={t.id === selectedTrackId}
               onSelect={() => onSelectTrack(t.id)}
-              onRemove={() => removeTrack(t.id)}
+              onRemove={() => requestRemoveTrack(t.id, t.fileName)}
             />
           ))}
         </div>
       )}
+      <ConfirmPrimaryChangeDialog />
     </>
   );
 }

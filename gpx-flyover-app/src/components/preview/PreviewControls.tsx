@@ -34,6 +34,7 @@ export function PreviewControls() {
   const updateVideo = useProjectStore((s) => s.updateVideo);
   const photoClips = useProjectStore((s) => s.photoClips);
   const videoClips = useProjectStore((s) => s.videoClips);
+  const textOverlays = useProjectStore((s) => s.textOverlays);
   const maxSpeedMarker = useProjectStore((s) => s.maxSpeedMarker);
   const primaryTrack = useProjectStore((s) => getPrimaryTrack(s));
   const { scrollRef, onScroll, onWheel, zoom } = useTimelineRowScroll();
@@ -50,6 +51,23 @@ export function PreviewControls() {
   const effectiveTrimEnd = trimEndSec ?? totalDur;
   const trimStartPct = totalDur > 0 ? Math.max(0, Math.min(100, (trimStartSec / totalDur) * 100)) : 0;
   const trimEndPct = totalDur > 0 ? Math.max(0, Math.min(100, (effectiveTrimEnd / totalDur) * 100)) : 100;
+
+  // Fasce colorate sovrapposte al righello principale, una per ogni blocco foto/video/testo
+  // attivo — stessi colori delle corsie sottostanti (index.css --lane-photo/video/text), così si
+  // vede a colpo d'occhio come sono distribuiti nel tempo senza scorrere le corsie.
+  const blockMarkers =
+    totalDur > 0
+      ? [
+          ...photoClips.map((p) => ({ key: `photo-${p.id}`, type: 'photo' as const, start: p.videoStart, length: p.duration })),
+          ...videoClips.map((c) => ({ key: `video-${c.id}`, type: 'video' as const, start: c.videoStart, length: c.trimEnd - c.trimStart })),
+          ...textOverlays.map((t) => ({ key: `text-${t.id}`, type: 'text' as const, start: t.videoStart, length: t.duration })),
+        ].map((b) => ({
+          key: b.key,
+          type: b.type,
+          leftPct: Math.max(0, Math.min(100, (b.start / totalDur) * 100)),
+          widthPct: Math.max(0, Math.min(100, (b.length / totalDur) * 100)),
+        }))
+      : [];
 
   // Marcatore fisso del punto "Velocità max" sul righello: a quale istante della timeline VIDEO
   // (nominale, 0..durationSec) il volo attraversa quel punto del percorso — inversa di
@@ -160,6 +178,13 @@ export function PreviewControls() {
             disabled={!started}
             onChange={(e) => handleSeekBarChange(Number(e.target.value))}
           />
+          {blockMarkers.map((b) => (
+            <div
+              key={b.key}
+              className={`preview-controls__block-marker preview-controls__block-marker--${b.type}`}
+              style={{ left: `${b.leftPct}%`, width: `${b.widthPct}%` }}
+            />
+          ))}
           {trimStartPct > 0 && <div className="preview-controls__trim-dim" style={{ left: 0, width: `${trimStartPct}%` }} />}
           {trimEndPct < 100 && (
             <div className="preview-controls__trim-dim" style={{ left: `${trimEndPct}%`, width: `${100 - trimEndPct}%` }} />

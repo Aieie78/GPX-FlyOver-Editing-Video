@@ -1,5 +1,6 @@
-import type { PlaybackSpeed, VideoClip } from '../types/domain';
+import type { PhotoClip, PlaybackSpeed, VideoClip } from '../types/domain';
 import { ensureAudioCtx } from '../audio/musicEngine';
+import { videoTimeToPathTime } from '../timeline/timelineMath';
 
 // Mirror di photoEngine.ts/musicEngine.ts per le clip video importate (Fase 6,
 // prompt-video-import.md): stesso pattern di caricamento/posizionamento, adattato dato che una
@@ -60,22 +61,27 @@ export function nextVideoId(): number {
   return videoIdSeq++;
 }
 
-// Carica una clip e calcola la posizione di attacco predefinita (in coda alle clip esistenti).
-// Port della logica in decodeMusicFile (musicEngine.ts), adattata al video.
+// Carica una clip e calcola la posizione di attacco predefinita (in coda alle clip esistenti), poi
+// la converte in pathFraction — stessa logica/stessa approssimazione (slowZone null) di
+// buildPhotoClipAppended (photoEngine.ts). Port della logica in decodeMusicFile (musicEngine.ts),
+// adattata al video.
 export async function buildVideoClipAppended(
   file: File,
-  existingClips: VideoClip[],
+  existingPhotoClips: PhotoClip[],
+  existingVideoClips: VideoClip[],
   totalDurationSec: number,
 ): Promise<VideoClip> {
   const videoEl = await loadVideoFile(file);
   const audioBuffer = await decodeClipAudio(file);
   const posterDataUrl = await capturePoster(videoEl, Math.min(0.1, videoEl.duration || 0));
-  const videoStart = existingClips.reduce(
+  const videoStart = existingVideoClips.reduce(
     (max, c) => Math.max(max, c.videoStart + (c.trimEnd - c.trimStart)),
     0,
   );
   const availableSpace = Math.max(0.5, totalDurationSec - videoStart);
   const trimEnd = Math.min(videoEl.duration, availableSpace);
+  const safeDuration = Math.max(0.001, totalDurationSec);
+  const pathFraction = videoTimeToPathTime(videoStart, existingPhotoClips, safeDuration, existingVideoClips, null) / safeDuration;
   return {
     id: nextVideoId(),
     name: file.name,
@@ -83,6 +89,7 @@ export async function buildVideoClipAppended(
     audioBuffer,
     posterDataUrl,
     videoStart,
+    pathFraction,
     trimStart: 0,
     trimEnd,
     muted: false,
@@ -93,6 +100,8 @@ export async function buildVideoClipAppended(
 // nella corsia), come decodeMusicFileAtPlayhead/buildPhotoClipAtPlayhead.
 export async function buildVideoClipAtPlayhead(
   file: File,
+  existingPhotoClips: PhotoClip[],
+  existingVideoClips: VideoClip[],
   totalDurationSec: number,
   playheadSec: number,
 ): Promise<VideoClip> {
@@ -102,6 +111,8 @@ export async function buildVideoClipAtPlayhead(
   const videoStart = Math.max(0, Math.min(totalDurationSec - 0.5, playheadSec));
   const availableSpace = Math.max(0.5, totalDurationSec - videoStart);
   const trimEnd = Math.min(videoEl.duration, availableSpace);
+  const safeDuration = Math.max(0.001, totalDurationSec);
+  const pathFraction = videoTimeToPathTime(videoStart, existingPhotoClips, safeDuration, existingVideoClips, null) / safeDuration;
   return {
     id: nextVideoId(),
     name: file.name,
@@ -109,6 +120,7 @@ export async function buildVideoClipAtPlayhead(
     audioBuffer,
     posterDataUrl,
     videoStart,
+    pathFraction,
     trimStart: 0,
     trimEnd,
     muted: false,

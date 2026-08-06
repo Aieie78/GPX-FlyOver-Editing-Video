@@ -4,9 +4,10 @@ import { Image, Plus, RotateCw, X } from 'lucide-react';
 import { getSessionEngine } from '../../app/flyoverSession';
 import { fmtMinSec } from '../../audio/musicEngine';
 import { buildPhotoClipAtPlayhead } from '../../photos/photoEngine';
-import { assignLaneRows, snapValue } from '../../timeline/timelineMath';
+import { assignLaneRows, resolveDragAnchor, snapValue } from '../../timeline/timelineMath';
+import { useSlowZone } from '../../timeline/useSlowZone';
 import { useTimelineRowScroll } from '../../timeline/useTimelineRowScroll';
-import { useProjectStore } from '../../store/useProjectStore';
+import { useProjectStore, getPrimaryTrack } from '../../store/useProjectStore';
 import { usePlaybackStore } from '../../store/usePlaybackStore';
 import { useTimelineSelectionStore } from '../../store/useTimelineSelectionStore';
 import type { PhotoClip, PhotoRotation } from '../../types/domain';
@@ -20,6 +21,7 @@ export function PhotoLane() {
   const laneRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoClips = useProjectStore((s) => s.photoClips);
+  const videoClips = useProjectStore((s) => s.videoClips);
   const updatePhotoClip = useProjectStore((s) => s.updatePhotoClip);
   const removePhotoClip = useProjectStore((s) => s.removePhotoClip);
   const addPhotoClip = useProjectStore((s) => s.addPhotoClip);
@@ -31,6 +33,24 @@ export function PhotoLane() {
   const selection = useTimelineSelectionStore((s) => s.selection);
   const selectClip = useTimelineSelectionStore((s) => s.select);
   const { scrollRef, onScroll, onWheel, zoom } = useTimelineRowScroll();
+  const slowZone = useSlowZone();
+
+  // Applica la posizione finale (in secondi nominali, già passata per lo snap) come ancora al
+  // percorso — resolveDragAnchor rileva se il punto cade dentro un altro blocco già presente
+  // (foto o video) e in tal caso ancora con overlapOfId/overlapOffsetSec invece che con la sola
+  // pathFraction, per preservare la sovrapposizione voluta (vedi timelineMath.ts). videoStart NON
+  // va mai scritto direttamente: resta un campo derivato, risincronizzato dallo store dopo
+  // l'update (resyncPhotoVideoPositions, useProjectStore.ts).
+  const applyResolvedStart = (clip: PhotoClip, newStartSec: number, extraPatch: Partial<PhotoClip> = {}) => {
+    const anchor = resolveDragAnchor(newStartSec, clip.id, 'photo', photoClips, videoClips, totalDur, slowZone);
+    updatePhotoClip(clip.id, {
+      ...extraPatch,
+      pathFraction: anchor.pathFraction,
+      overlapOfId: anchor.overlapOfId,
+      overlapOfKind: anchor.overlapOfKind,
+      overlapOffsetSec: anchor.overlapOffsetSec,
+    });
+  };
 
   const startDrag = (e: ReactMouseEvent, clip: PhotoClip, mode: DragMode) => {
     e.preventDefault();
@@ -51,12 +71,13 @@ export function PhotoLane() {
       if (mode === 'move') {
         let newStart = Math.max(0, Math.min(totalDur - orig.duration, orig.videoStart + dxSec));
         newStart = snapValue(newStart, [...snapCandidates, ...snapCandidates.map((c) => c - orig.duration)], snapThreshold);
-        updatePhotoClip(clip.id, { videoStart: Math.max(0, Math.min(totalDur - orig.duration, newStart)) });
+        newStart = Math.max(0, Math.min(totalDur - orig.duration, newStart));
+        applyResolvedStart(clip, newStart);
       } else if (mode === 'left') {
         const endAnchor = orig.videoStart + orig.duration;
         let newStart = snapValue(orig.videoStart + dxSec, snapCandidates, snapThreshold);
         newStart = Math.max(0, Math.min(endAnchor - 0.3, newStart));
-        updatePhotoClip(clip.id, { videoStart: newStart, duration: endAnchor - newStart });
+        applyResolvedStart(clip, newStart, { duration: endAnchor - newStart });
       } else {
         const rawEnd = snapValue(orig.videoStart + orig.duration + dxSec, snapCandidates, snapThreshold);
         let newDuration = Math.max(0.3, Math.min(15, rawEnd - orig.videoStart));
@@ -103,8 +124,12 @@ export function PhotoLane() {
   const handleAddClick = () => fileInputRef.current?.click();
 
   const addFileAt = async (file: File, atSec: number) => {
+    if (!getPrimaryTrack(useProjectStore.getState())) {
+      setStatusMessage('Carica prima una traccia GPX — foto e video si posizionano lungo il percorso.');
+      return;
+    }
     try {
-      const clip = await buildPhotoClipAtPlayhead(file, photoDefaultDuration, totalDur, atSec);
+      const clip = await buildPhotoClipAtPlayhead(file, photoClips, videoClips, photoDefaultDuration, totalDur, atSec);
       addPhotoClip(clip);
     } catch (err) {
       console.error('Errore caricamento immagine', file.name, err);

@@ -74,6 +74,27 @@
   border: none;
 }
 
+/* Fasce colorate sovrapposte al righello per ogni blocco foto/video/testo attivo — stessi colori
+ * delle corsie sottostanti (index.css --lane-photo/video/text), semi-trasparenti così restano
+ * leggibili sopra il righello e si sommano visivamente dove più blocchi si sovrappongono. */
+.preview-controls__block-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0.35;
+}
+.preview-controls__block-marker--photo {
+  background: var(--lane-photo);
+}
+.preview-controls__block-marker--video {
+  background: var(--lane-video);
+}
+.preview-controls__block-marker--text {
+  background: var(--lane-text);
+}
+
 /* Zone escluse dalla registrazione (fuori dall'intervallo selezionato con le maniglie) */
 .preview-controls__trim-dim {
   position: absolute;
