@@ -122,8 +122,9 @@
 
   <div class="field">
     <div class="name">Multi-traccia — "Aggiungi altra traccia"</div>
-    <div class="text">Dopo il primo caricamento il pulsante principale diventa <b>Aggiungi altra traccia</b>: puoi caricare più file GPX nello stesso progetto (es. più mezzi che percorrono lo stesso giro). Ogni traccia mostra un riquadro con nome file, distanza, dislivello, durata e un pulsante per rimuoverla (cestino). Una sola traccia è designata <b>principale</b> (radio button "principale") — è quella che guida la camera e la durata del video; le tracce secondarie vengono sincronizzate per orario GPX reale: se un istante non è coperto dal timestamp di una traccia secondaria, la sua icona semplicemente non compare in quel momento.</div>
+    <div class="text">Dopo il primo caricamento il pulsante principale diventa <b>Aggiungi altra traccia</b>: puoi caricare più file GPX nello stesso progetto (es. più mezzi che percorrono lo stesso giro). Ogni traccia mostra un riquadro con nome file, distanza, dislivello, durata e un pulsante per rimuoverla (cestino). Una sola traccia è designata <b>principale</b> (radio button "principale") — è quella che guida la camera, la durata del video, ed è il percorso a cui sono ancorati foto e video in timeline (vedi sotto); le tracce secondarie vengono sincronizzate per orario GPX reale: se un istante non è coperto dal timestamp di una traccia secondaria, la sua icona semplicemente non compare in quel momento.</div>
     <div class="warn">Se il GPX non contiene timestamp validi, la sincronizzazione multi-mezzo non è possibile e compare un avviso nelle statistiche.</div>
+    <div class="warn"><b>Foto/video già posizionati in timeline</b>: cambiare la traccia <b>principale</b>, <b>rimuoverla</b> (cestino), o cambiare <b>Segmenti multipli</b> qui sotto cambia il percorso a cui sono ancorati — se ci sono blocchi foto/video già posizionati, compare un avviso di conferma con il numero di blocchi che verrebbero rimossi prima di procedere. <b>Annulla</b> lascia tutto invariato; <b>Continua</b> applica il cambio e rimuove quei blocchi (non recuperabili con Ctrl+Z dopo la conferma). Musica e testo non sono interessati, restano dove sono.</div>
   </div>
 
   <h2 id="video">Impostazioni video</h2>
@@ -274,9 +275,18 @@
   <h2 id="media">Musica, Foto &amp; Video</h2>
   <p>Ogni tipo di clip si può caricare dalla sidebar (batch, in coda alle clip esistenti) oppure con il pulsante "+" o trascinandola direttamente sulla corsia corrispondente nella timeline — in entrambi i casi si posiziona al punto di riproduzione attuale.</p>
 
+  <div class="warn">
+    <b>Foto e video sono ancorati a un punto del percorso</b> <span class="badge">novità</span>, non a un secondo fisso della timeline: rappresentano sempre lo stesso punto della strada, qualunque cosa cambi altrove. Di conseguenza:
+    <ul style="margin:8px 0 0;padding-left:18px;">
+      <li><b>Serve un GPX già caricato</b> prima di poter aggiungere una foto o un video — senza un percorso non c'è un punto a cui ancorarli. Musica e testo non hanno questa limitazione.</li>
+      <li>Se aggiungi, rimuovi o allunghi/accorci un altro blocco foto/video altrove nella timeline, quelli già posizionati possono <b>spostarsi leggermente in secondi</b> per restare esattamente sullo stesso punto della strada — è il comportamento voluto, non un bug: prima invece restavano fissi al secondo e "scivolavano" visivamente lungo il percorso quando si aggiungeva qualcos'altro.</li>
+      <li>Cambiare traccia principale, rimuoverla, o cambiare "Segmenti multipli" invalida l'ancoraggio esistente — vedi l'avviso nella sezione <a href="#caricamento">Caricamento del GPX</a> qui sopra.</li>
+    </ul>
+  </div>
+
   <div class="field">
     <div class="name"><span class="dot" style="background:#14b8a6"></span> Musica</div>
-    <div class="text">Upload multiplo di file audio. <b>Volume musica</b>: slider 0-100%, default <span class="default">60%</span>. Sulla corsia i blocchi sono trascinabili (sposta/taglia i bordi); selezionando un blocco: Muto, <b>Solo</b> (silenzia tutti gli altri brani), volume del singolo brano, <b>Taglia al playhead</b> (split in due), <b>Duplica</b>.</div>
+    <div class="text">Upload multiplo di file audio. <b>Volume musica</b>: slider 0-100%, default <span class="default">60%</span>. Sulla corsia i blocchi sono trascinabili (sposta/taglia i bordi); selezionando un blocco: Muto, <b>Solo</b> (silenzia tutti gli altri brani), volume del singolo brano, <b>Taglia al playhead</b> (split in due), <b>Duplica</b>. Resta ancorata a tempo assoluto come sempre, non al percorso.</div>
   </div>
 
   <div class="field">
@@ -291,6 +301,11 @@
       <b>Musica di sottofondo durante un video con audio</b>: si abbassa automaticamente (<i>ducking</i>) con una breve dissolvenza in entrata e in uscita, per lasciare spazio all'audio della clip. Una clip impostata su Muto non causa alcun abbassamento.<br><br>
       <b>Velocità di riproduzione (x0.5/x1/x1.5/x2) e clip video</b>: in <u>anteprima</u> la clip segue sempre la velocità scelta e mostra sempre il contenuto per intero. In <u>esportazione</u>, se la velocità è diversa da x1, la finestra della clip sulla timeline si accorcia o si allunga ma il contenuto sorgente scorre al suo ritmo naturale — quindi nel video finale si vede una porzione proporzionalmente più corta (o più lunga) della clip, non l'intera clip accelerata o rallentata. È una piccola differenza intenzionale tra anteprima ed export, di cui tener conto solo se esporti a velocità diversa da x1 con una clip video attiva in quel punto.
     </div>
+  </div>
+
+  <div class="field">
+    <div class="name">Sovrapporre due blocchi (foto/foto, foto/video, video/video)</div>
+    <div class="text">Trascinando un blocco esattamente sopra un altro già presente in una qualunque corsia foto/video, i due restano <b>sovrapposti nel punto esatto</b> in cui li hai rilasciati (anche in righe separate della stessa corsia, se necessario) invece di scattare uno dopo l'altro. Se le finestre di una foto e di un video si sovrappongono, <b>in anteprima ed export vince il video</b>. Se il blocco a cui uno era sovrapposto viene rimosso, quello rimanente si comporta semplicemente come un blocco indipendente ancorato al punto in cui si trovava — nessuna perdita di posizione.</div>
   </div>
 
   <div class="field">
@@ -322,7 +337,7 @@
     <tr><th>Controllo</th><th>Funzione</th></tr>
     <tr><td>⏪ / ⏩</td><td>Salta indietro/avanti di 5 secondi</td></tr>
     <tr><td>⏸ / ▶️</td><td>Metti in pausa o riprendi la riproduzione dell'anteprima</td></tr>
-    <tr><td>Barra di scorrimento</td><td>Trascina per saltare a qualunque punto del percorso; un tooltip mostra l'orario al passaggio del mouse</td></tr>
+    <tr><td>Barra di scorrimento</td><td>Trascina per saltare a qualunque punto del percorso; un tooltip mostra l'orario al passaggio del mouse. Mostra anche fasce colorate semi-trasparenti <span class="badge">novità</span> (viola per le foto, blu per i video, giallo per il testo) nei tratti in cui un blocco è attivo, per vedere a colpo d'occhio come sono distribuiti nel tempo senza dover scorrere le corsie sottostanti.</td></tr>
     <tr><td>x0.5 / x1 / x1.5 / x2</td><td>Velocità di riproduzione dell'anteprima (vedi nota sul comportamento delle clip video sopra)</td></tr>
   </table>
 
@@ -360,6 +375,8 @@
     <tr><td>La velocità nel riquadro statistiche mostra "n/d"</td><td>Il GPX non contiene timestamp validi in quel tratto — la quota/posizione restano comunque corrette.</td></tr>
     <tr><td>Non vedo la bandierina "Velocità max"</td><td>Il GPX non contiene timestamp <code>&lt;time&gt;</code> validi in nessun tratto (serve un timestamp per calcolare una velocità), oppure hai scartato tutti i candidati con "Scarta questo punto" — prova "Ripristina".</td></tr>
     <tr><td>Aggiungo una clip video/foto mentre l'anteprima è ferma e non la vedo subito</td><td>Compare regolarmente non appena il fotogramma richiesto è pronto (di solito un istante) — nessuna azione necessaria oltre attendere o riprendere la riproduzione.</td></tr>
+    <tr><td>Non riesco ad aggiungere una foto o un video ("Carica prima una traccia GPX")</td><td>Foto e video si ancorano a un punto del percorso — serve caricare almeno un GPX (passo 1) prima di poterli aggiungere. Musica e testo non hanno questa limitazione.</td></tr>
+    <tr><td>Una foto/video si è spostata da sola in secondi dopo aver aggiunto un altro blocco</td><td>Normale: restano ancorati allo stesso punto del percorso, non a un secondo fisso — se cambia la durata "occupata" da altri blocchi altrove, la loro posizione in secondi si aggiusta di conseguenza per continuare a puntare allo stesso punto della strada.</td></tr>
     <tr><td>Il browser mostra un avviso sulla codifica video</td><td>Normale su browser senza supporto WebCodecs: la registrazione passa a una modalità in tempo reale più lenta ma funzionante.</td></tr>
   </table>
 
