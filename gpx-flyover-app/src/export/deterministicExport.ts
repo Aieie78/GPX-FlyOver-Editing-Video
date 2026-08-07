@@ -5,9 +5,10 @@ import { updateRouteDoneUpTo } from '../map/mapSetup';
 import { getEffectiveMaxSpeedPoint } from '../geo/geo';
 import { computePathIndex, computeSlowZone } from '../timeline/timelineMath';
 import { getActiveVideoClip, seekVideoFrame } from '../video/videoEngine';
-import { buildProfileBackground } from '../stats/altitudeProfile';
 import {
+  buildProfileBackgroundFor,
   buildSecondaryIndexes,
+  cameraForExport,
   computeAspectCrop,
   computeSecondaryFrame,
   drawOverlayFrame,
@@ -70,7 +71,7 @@ export async function recordFlightDeterministic(
 
   const baseDuration = video.durationSec;
   const effectiveDuration = baseDuration / selectedSpeed;
-  const p = buildAnimParams(track, video, camera, title, effectiveDuration);
+  const p = buildAnimParams(track, video, cameraForExport(camera, video.aspectRatio), title, effectiveDuration);
   let smoothBearing = initialBearing(p);
 
   // Stesso riscalamento di recordFlight: le posizioni di musica/foto/video/testo sono pensate
@@ -90,19 +91,19 @@ export async function recordFlightDeterministic(
   const frameEnd = Math.max(frameStart + 1, Math.min(p.totalFrames, Math.round(effRangeEnd * p.fps)));
   const outputTotalFrames = frameEnd - frameStart;
 
-  // Stessa composizione a 16:9 + ritaglio finale al centro di recordFlight (videoExport.ts):
-  // recCanvas (quello che Mediabunny/CanvasSource cattura davvero) ha le dimensioni GIÀ ritagliate,
+  // Stessa composizione su canvas 16:9 di riferimento + ritaglio finale al centro di recordFlight
+  // (videoExport.ts): recCanvas (quello che Mediabunny/CanvasSource cattura davvero) ha le
+  // dimensioni GIÀ ritagliate (per 9:16/1:1, la risoluzione dedicata — vedi computeAspectCrop),
   // composeCanvas è la scena intera su cui disegna drawOverlayFrame.
-  const [resW, resH] = video.resolution.split('x').map(Number);
-  const crop = computeAspectCrop(resW, resH, video.aspectRatio);
+  const crop = computeAspectCrop(video.resolution, video.aspectRatio);
   recCanvas.width = crop.outW;
   recCanvas.height = crop.outH;
   const recCtx = recCanvas.getContext('2d')!;
   const composeCanvas = document.createElement('canvas');
-  composeCanvas.width = resW;
-  composeCanvas.height = resH;
+  composeCanvas.width = crop.resW;
+  composeCanvas.height = crop.resH;
   const composeCtx = composeCanvas.getContext('2d')!;
-  const profileBg = buildProfileBackground(track, resW / 1280);
+  const profileBg = buildProfileBackgroundFor(track, crop);
 
   // Stesso pre-caricamento di recordFlight: posiziona la camera sul PRIMO fotogramma del
   // ritaglio (non necessariamente l'inizio assoluto del percorso) e attende che la mappa sia
@@ -203,6 +204,7 @@ export async function recordFlightDeterministic(
           videoClips: scaledVideoClips,
           textOverlays: scaledTextOverlays,
           showAltitudeProfile: video.showAltitudeProfile,
+          crop,
         },
         secondaryPositions,
       );

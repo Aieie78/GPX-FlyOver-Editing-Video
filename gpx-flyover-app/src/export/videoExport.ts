@@ -9,7 +9,13 @@ import { drawAltitudeLine, drawVehicleIcon, vehicleScreenPos } from '../vehicle/
 import { drawPhotoCover, getActivePhotoLayers } from '../photos/photoEngine';
 import { drawVideoCover, getActiveVideoClip, seekVideoFrame } from '../video/videoEngine';
 import { drawLiveStatsBox } from '../stats/liveStatsOverlay';
-import { buildProfileBackground, drawAltitudeProfile, type ProfileBackground } from '../stats/altitudeProfile';
+import {
+  buildProfileBackground,
+  buildProfileBackgroundStacked,
+  drawAltitudeProfile,
+  drawAltitudeProfileStacked,
+  type ProfileBackground,
+} from '../stats/altitudeProfile';
 import { drawMaxSpeedMarker, maxSpeedMarkerScreenPos } from '../stats/maxSpeedMarker';
 import { drawTextOverlay, getActiveTextOverlays } from '../text/textEngine';
 import type {
@@ -40,6 +46,11 @@ export interface SecondaryFramePosition {
 }
 
 export interface AspectCrop {
+  // Dimensioni del canvas "largo" di riferimento (16:9) su cui drawOverlayFrame disegna scena +
+  // overlay, PRIMA del ritaglio finale.
+  resW: number;
+  resH: number;
+  // Dimensioni finali del video esportato (dopo il ritaglio).
   outW: number;
   outH: number;
   sx: number;
@@ -48,19 +59,35 @@ export interface AspectCrop {
   sh: number;
 }
 
-// La scena viene sempre composta in 16:9 (resW x resH, come oggi) e poi ritagliata al centro nel
-// formato scelto — per 16:9 il ritaglio è un no-op (l'intero fotogramma). Per 9:16 si mantiene
-// l'intera altezza e si ritaglia la larghezza; per 1:1 si ritaglia un quadrato pari all'altezza.
-// resH < resW sempre (tutte le risoluzioni disponibili sono 16:9), quindi il ritaglio centrale
-// rientra sempre nella larghezza disponibile.
-export function computeAspectCrop(resW: number, resH: number, aspectRatio: VideoAspectRatio): AspectCrop {
+// video.resolution indica sempre una coppia 16:9 (es. "1920x1080") usata come riferimento di
+// QUALITÀ (lato corto = resH) — le dimensioni EFFETTIVE del video esportato dipendono anche dal
+// formato scelto: per 9:16 il lato corto resta resH (es. 1080) ma diventa la LARGHEZZA, e il lato
+// lungo (l'altezza, es. 1920) si ottiene moltiplicando per 16/9 — non è un sottoinsieme più
+// piccolo della risoluzione 16:9 scelta, ma un canvas verticale a sé, della stessa qualità
+// (stesso numero di pixel sul lato corto). Per 1:1 entrambi i lati sono pari al lato corto.
+export function outputDimsFor(resW: number, resH: number, aspectRatio: VideoAspectRatio): { outW: number; outH: number } {
+  if (aspectRatio === '16:9') return { outW: resW, outH: resH };
+  if (aspectRatio === '1:1') return { outW: resH, outH: resH };
+  const outW = resH;
+  const outH = Math.round(((resH * 16) / 9) / 2) * 2;
+  return { outW, outH };
+}
+
+// La scena viene sempre composta su un canvas "largo" 16:9 di riferimento e poi ritagliata al
+// centro nel formato scelto — per 16:9 il ritaglio è un no-op (l'intero fotogramma È il
+// riferimento, resW/resH = outW/outH). Per 9:16/1:1 il canvas di riferimento è un 16:9
+// equivalente la cui ALTEZZA è già quella di output (outH, vedi outputDimsFor) — il ritaglio
+// centrale ne preleva la fascia verticale larga outW, sempre entro i bordi per costruzione.
+export function computeAspectCrop(resolution: string, aspectRatio: VideoAspectRatio): AspectCrop {
+  const [baseW, baseH] = resolution.split('x').map(Number);
+  const { outW, outH } = outputDimsFor(baseW, baseH, aspectRatio);
   if (aspectRatio === '16:9') {
-    return { outW: resW, outH: resH, sx: 0, sy: 0, sw: resW, sh: resH };
+    return { resW: outW, resH: outH, outW, outH, sx: 0, sy: 0, sw: outW, sh: outH };
   }
-  const outH = resH;
-  const outW = aspectRatio === '1:1' ? resH : Math.round(((resH * 9) / 16) / 2) * 2;
+  const resH = outH;
+  const resW = Math.round(((outH * 16) / 9) / 2) * 2;
   const sx = Math.max(0, Math.round((resW - outW) / 2));
-  return { outW, outH, sx, sy: 0, sw: outW, sh: outH };
+  return { resW, resH, outW, outH, sx, sy: 0, sw: outW, sh: outH };
 }
 
 // Le posizioni di musica/foto sono impostate dall'utente guardando la durata NOMINALE (il campo
@@ -186,6 +213,102 @@ interface DrawOverlayArgs {
   videoClips: VideoClip[];
   textOverlays: TextOverlay[];
   showAltitudeProfile: boolean;
+  crop: AspectCrop;
+}
+
+// Geometria del layout impilato (9:16/1:1): titolo, profilo altimetrico, card statistiche e barra
+// di avanzamento, tutti confinati entro la finestra di ritaglio (crop.sx..crop.sx+crop.sw) invece
+// che sull'intero canvas largo di riferimento — unica fonte di verità sia per chi pre-costruisce
+// lo sfondo del profilo (buildProfileBackgroundStacked, prima del ciclo di rendering) sia per
+// drawOverlayFrame (che disegna ogni fotogramma), così le dimensioni restano coerenti tra i due.
+// Scala rispetto a una larghezza di riferimento di 1080px (formato verticale "1080p").
+export interface StackedLayoutMetrics {
+  scale: number;
+  titleFontSize: number;
+  titleShadowBlur: number;
+  titleY: number;
+  profileX: number;
+  profileY: number;
+  profileW: number;
+  profileH: number;
+  cardX: number;
+  cardY: number;
+  cardW: number;
+  cardH: number;
+  cardFontSize: number;
+  cardPadX: number;
+  row1Y: number;
+  row2Y: number;
+  col2X: number;
+  barX: number;
+  barY: number;
+  barW: number;
+  barH: number;
+}
+
+// Tutte le dimensioni sono già risolte in pixel assoluti (compresi font e offset del testo nella
+// card) — chi disegna (drawOverlayFrame) non deve applicare NESSUN fattore di scala proprio: usare
+// invece un riferimento diverso (es. la scala del canvas largo 16:9) qui produrrebbe testo fuori
+// misura rispetto alle posizioni calcolate, con la card statistiche disegnata piccola ma il testo
+// al suo interno enorme e traboccante sotto la barra di avanzamento — bug reale osservato in
+// verifica: la card usava questa scala (~1x, riferita a 1080px) mentre i fillText successivi
+// usavano ancora la scala del canvas largo (~2.7x per 9:16/1080p), risultando scollegati.
+export function computeStackedLayout(crop: AspectCrop): StackedLayoutMetrics {
+  const s = crop.outW / 1080;
+  const margin = 28 * s;
+  const left = crop.sx + margin;
+  const width = crop.sw - margin * 2;
+  const barH = 8 * s;
+  const barY = crop.outH - 64 * s;
+  const cardH = 116 * s;
+  const cardY = barY - 22 * s - cardH;
+  const cardPadX = 20 * s;
+  return {
+    scale: s,
+    titleFontSize: 30 * s,
+    titleShadowBlur: 8 * s,
+    titleY: 64 * s,
+    profileX: left,
+    profileY: 96 * s,
+    profileW: width,
+    profileH: 130 * s,
+    cardX: left,
+    cardY,
+    cardW: width,
+    cardH,
+    cardFontSize: 22 * s,
+    cardPadX,
+    row1Y: cardY + 40 * s,
+    row2Y: cardY + 86 * s,
+    col2X: left + width / 2 + 10 * s,
+    barX: left,
+    barY,
+    barW: width,
+    barH,
+  };
+}
+
+// Costruisce lo sfondo del profilo altimetrico nel layout corretto per il formato di export —
+// impilato a piena larghezza (9:16/1:1) o in alto a destra come oggi (16:9). Chiamata una volta
+// sola per registrazione (prima del ciclo di rendering), non per fotogramma.
+export function buildProfileBackgroundFor(track: Track, crop: AspectCrop): ProfileBackground {
+  if (crop.outW <= crop.outH) {
+    const layout = computeStackedLayout(crop);
+    return buildProfileBackgroundStacked(track, layout.profileW, layout.profileH);
+  }
+  return buildProfileBackground(track, crop.resW / 1280);
+}
+
+// Zoom camera leggermente maggiore per i formati non 16:9, per compensare — solo in parte, non
+// annullarlo — il minor campo visivo orizzontale dopo il ritaglio centrale (computeAspectCrop):
+// costanti modeste, non pensate per restituire lo stesso campo visivo del 16:9 (che richiederebbe
+// un ingrandimento molto più aggressivo, a scapito del contesto circostante il percorso). Si
+// applica solo in fase di export: l'anteprima interattiva non è mai ritagliata e resta invariata.
+const EXPORT_ZOOM_BOOST: Record<VideoAspectRatio, number> = { '16:9': 0, '9:16': 0.5, '1:1': 0.25 };
+
+export function cameraForExport(camera: CameraParams, aspectRatio: VideoAspectRatio): CameraParams {
+  const boost = EXPORT_ZOOM_BOOST[aspectRatio];
+  return boost ? { ...camera, zoom: camera.zoom + boost } : camera;
 }
 
 // Disegna un fotogramma completo dell'overlay di esportazione (mappa + icona mezzo + titolo +
@@ -203,7 +326,8 @@ export function drawOverlayFrame(
   args: DrawOverlayArgs,
   secondaryPositions: SecondaryFramePosition[] = [],
 ): void {
-  const { title, cur, progress, zoom, pitch, timeSec, photoClips, videoClips, textOverlays, showAltitudeProfile } = args;
+  const { title, cur, progress, zoom, pitch, timeSec, photoClips, videoClips, textOverlays, showAltitudeProfile, crop } = args;
+  const stacked = crop.outW <= crop.outH;
   const mapCanvas = map.getCanvas();
   recCtx.drawImage(mapCanvas, 0, 0, recCanvas.width, recCanvas.height);
 
@@ -249,39 +373,78 @@ export function drawOverlayFrame(
       recCanvas.width,
       maxSpeedPoint,
       maxSpeedMarker.sizeScale,
+      crop.sx + crop.sw,
     );
   }
 
-  // titolo
-  recCtx.font = `bold ${34 * s}px system-ui`;
-  recCtx.fillStyle = '#fff';
-  recCtx.shadowColor = 'rgba(0,0,0,0.6)';
-  recCtx.shadowBlur = 8 * s;
-  recCtx.fillText(title, 40 * s, 60 * s);
-  recCtx.shadowBlur = 0;
-
-  // ---- profilo altimetrico (sagoma pre-disegnata) in alto a destra, disattivabile ----
-  if (showAltitudeProfile) {
-    drawAltitudeProfile(recCtx, recCanvas.width, track, profileBg, progress);
-  }
-
-  // barra stats in basso
   const distSoFar = (cur.dist / 1000).toFixed(1);
   const totalKm = (track.totalDist / 1000).toFixed(1);
   const gainSoFar = Math.round(track.gain * progress);
-  recCtx.fillStyle = 'rgba(0,0,0,0.45)';
-  recCtx.fillRect(30 * s, recCanvas.height - 90 * s, 520 * s, 60 * s);
-  recCtx.fillStyle = '#ffcc00';
-  recCtx.font = `bold ${20 * s}px system-ui`;
-  recCtx.fillText(`${distSoFar} / ${totalKm} km`, 50 * s, recCanvas.height - 58 * s);
-  recCtx.fillText(`+${gainSoFar} m`, 250 * s, recCanvas.height - 58 * s);
-  recCtx.fillText(`⛰ ${Math.round(cur.ele)} m`, 400 * s, recCanvas.height - 58 * s);
 
-  // barra di avanzamento
-  recCtx.fillStyle = 'rgba(255,255,255,0.25)';
-  recCtx.fillRect(30 * s, recCanvas.height - 25 * s, 520 * s, 6 * s);
-  recCtx.fillStyle = '#ffcc00';
-  recCtx.fillRect(30 * s, recCanvas.height - 25 * s, 520 * s * progress, 6 * s);
+  if (stacked) {
+    const layout = computeStackedLayout(crop);
+
+    // titolo, centrato entro la finestra di ritaglio — tutte le dimensioni vengono dal layout
+    // (scala ~1x su riferimento 1080px), MAI dalla `s` esterna (scala del canvas largo 16:9,
+    // ~2-3x per 9:16/1:1): mischiare le due scale è il bug già preso una volta in verifica (vedi
+    // commento su computeStackedLayout).
+    recCtx.font = `bold ${layout.titleFontSize}px system-ui`;
+    recCtx.fillStyle = '#fff';
+    recCtx.shadowColor = 'rgba(0,0,0,0.6)';
+    recCtx.shadowBlur = layout.titleShadowBlur;
+    recCtx.textAlign = 'center';
+    recCtx.fillText(title, crop.sx + crop.sw / 2, layout.titleY);
+    recCtx.shadowBlur = 0;
+    recCtx.textAlign = 'left';
+
+    // profilo altimetrico: fascia a piena larghezza sotto il titolo, disattivabile
+    if (showAltitudeProfile) {
+      drawAltitudeProfileStacked(recCtx, layout.profileX, layout.profileY, track, profileBg, progress);
+    }
+
+    // card statistiche: righe impilate invece che affiancate (distanza, poi dislivello/quota)
+    recCtx.fillStyle = 'rgba(0,0,0,0.45)';
+    recCtx.fillRect(layout.cardX, layout.cardY, layout.cardW, layout.cardH);
+    recCtx.fillStyle = '#ffcc00';
+    recCtx.font = `bold ${layout.cardFontSize}px system-ui`;
+    recCtx.fillText(`${distSoFar} / ${totalKm} km`, layout.cardX + layout.cardPadX, layout.row1Y);
+    recCtx.fillText(`+${gainSoFar} m`, layout.cardX + layout.cardPadX, layout.row2Y);
+    recCtx.fillText(`⛰ ${Math.round(cur.ele)} m`, layout.col2X, layout.row2Y);
+
+    // barra di avanzamento, tutta larghezza
+    recCtx.fillStyle = 'rgba(255,255,255,0.25)';
+    recCtx.fillRect(layout.barX, layout.barY, layout.barW, layout.barH);
+    recCtx.fillStyle = '#ffcc00';
+    recCtx.fillRect(layout.barX, layout.barY, layout.barW * progress, layout.barH);
+  } else {
+    // titolo
+    recCtx.font = `bold ${34 * s}px system-ui`;
+    recCtx.fillStyle = '#fff';
+    recCtx.shadowColor = 'rgba(0,0,0,0.6)';
+    recCtx.shadowBlur = 8 * s;
+    recCtx.fillText(title, 40 * s, 60 * s);
+    recCtx.shadowBlur = 0;
+
+    // ---- profilo altimetrico (sagoma pre-disegnata) in alto a destra, disattivabile ----
+    if (showAltitudeProfile) {
+      drawAltitudeProfile(recCtx, recCanvas.width, track, profileBg, progress);
+    }
+
+    // barra stats in basso
+    recCtx.fillStyle = 'rgba(0,0,0,0.45)';
+    recCtx.fillRect(30 * s, recCanvas.height - 90 * s, 520 * s, 60 * s);
+    recCtx.fillStyle = '#ffcc00';
+    recCtx.font = `bold ${20 * s}px system-ui`;
+    recCtx.fillText(`${distSoFar} / ${totalKm} km`, 50 * s, recCanvas.height - 58 * s);
+    recCtx.fillText(`+${gainSoFar} m`, 250 * s, recCanvas.height - 58 * s);
+    recCtx.fillText(`⛰ ${Math.round(cur.ele)} m`, 400 * s, recCanvas.height - 58 * s);
+
+    // barra di avanzamento
+    recCtx.fillStyle = 'rgba(255,255,255,0.25)';
+    recCtx.fillRect(30 * s, recCanvas.height - 25 * s, 520 * s, 6 * s);
+    recCtx.fillStyle = '#ffcc00';
+    recCtx.fillRect(30 * s, recCanvas.height - 25 * s, 520 * s * progress, 6 * s);
+  }
 
   // foto della timeline (se attiva in questo istante): copre tutto il resto
   const activeLayers = getActivePhotoLayers(photoClips, timeSec);
@@ -409,7 +572,7 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
 
   const baseDuration = video.durationSec;
   const effectiveDuration = baseDuration / selectedSpeed; // x1.5/x2 = video più corto e più rapido, x0.5 = più lungo e lento
-  const p = buildAnimParams(track, video, camera, title, effectiveDuration);
+  const p = buildAnimParams(track, video, cameraForExport(camera, video.aspectRatio), title, effectiveDuration);
   let smoothBearing = initialBearing(p);
 
   // Le posizioni di musica/foto/video/testo sono pensate dall'utente sulla durata NOMINALE — a
@@ -430,23 +593,24 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
   const frameStart = Math.max(0, Math.min(p.totalFrames - 1, Math.round(effRangeStart * p.fps)));
   const frameEnd = Math.max(frameStart + 1, Math.min(p.totalFrames, Math.round(effRangeEnd * p.fps)));
 
-  // La scena viene sempre composta in 16:9 (resW x resH) su un canvas separato (composeCanvas),
-  // poi ritagliata al centro nel formato scelto (video.aspectRatio) sul recCanvas vero e proprio,
+  // La scena viene sempre composta su un canvas 16:9 di riferimento separato (composeCanvas), poi
+  // ritagliata al centro nel formato scelto (video.aspectRatio) sul recCanvas vero e proprio,
   // quello effettivamente catturato da captureStream/MediaRecorder — per 16:9 il ritaglio è un
-  // no-op (l'intero fotogramma), quindi il percorso invariato resta identico a prima.
-  const [resW, resH] = video.resolution.split('x').map(Number);
-  const crop = computeAspectCrop(resW, resH, video.aspectRatio);
+  // no-op (l'intero fotogramma). Per 9:16/1:1 il riferimento è più alto (non più semplicemente le
+  // dimensioni scelte in "Risoluzione video", vedi computeAspectCrop) e l'output ha risoluzione
+  // dedicata (es. 1080×1920), non una porzione più piccola della risoluzione 16:9 scelta.
+  const crop = computeAspectCrop(video.resolution, video.aspectRatio);
   recCanvas.width = crop.outW;
   recCanvas.height = crop.outH;
   const recCtx = recCanvas.getContext('2d')!;
   const composeCanvas = document.createElement('canvas');
-  composeCanvas.width = resW;
-  composeCanvas.height = resH;
+  composeCanvas.width = crop.resW;
+  composeCanvas.height = crop.resH;
   const composeCtx = composeCanvas.getContext('2d')!;
 
   const recordedChunks: Blob[] = [];
   const videoStream = recCanvas.captureStream(p.fps);
-  const profileBg = buildProfileBackground(track, resW / 1280);
+  const profileBg = buildProfileBackgroundFor(track, crop);
 
   // Pre-caricamento: posiziona la camera sul PRIMO fotogramma del ritaglio (non necessariamente
   // l'inizio assoluto del percorso) e attende che la mappa sia effettivamente pronta (tile
@@ -563,6 +727,7 @@ export async function recordFlight(args: RecordFlightArgs): Promise<Blob> {
         videoClips: scaledVideoClips,
         textOverlays: scaledTextOverlays,
         showAltitudeProfile: video.showAltitudeProfile,
+        crop,
       },
       secondaryPositions,
     );

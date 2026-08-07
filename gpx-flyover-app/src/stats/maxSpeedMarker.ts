@@ -42,6 +42,11 @@ export function drawMaxSpeedMarker(
   canvasW: number,
   point: MaxSpeedPoint,
   sizeScale = 1,
+  // Bordo destro entro cui l'etichetta deve stare (per decidere se disegnarla a sinistra del pin
+  // invece che a destra) — di norma canvasW stesso, ma per i formati ritagliati (9:16/1:1) il
+  // chiamante passa il bordo destro della finestra di ritaglio, non dell'intero canvas largo di
+  // riferimento (altrimenti l'etichetta può finire fuori dall'area visibile del video esportato).
+  rightBound: number = canvasW,
 ): void {
   const s = (canvasW / 1280) * sizeScale;
   const tipX = x;
@@ -104,7 +109,7 @@ export function drawMaxSpeedMarker(
   const boxW = textW + padX * 2;
   const boxH = fontSize + padY * 2;
   const gap = 8 * s;
-  const spaceRight = canvasW - (tipX + r + gap);
+  const spaceRight = rightBound - (tipX + r + gap);
   const placeLeft = spaceRight < boxW;
   const boxX = placeLeft ? tipX - r - gap - boxW : tipX + r + gap;
   const boxY = cy - boxH / 2;

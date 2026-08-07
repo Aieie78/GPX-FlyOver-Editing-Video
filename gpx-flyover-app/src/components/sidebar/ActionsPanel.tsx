@@ -1,14 +1,31 @@
 import { useMemo, useRef, useState } from 'react';
-import { Download } from 'lucide-react';
+import { Download, Video } from 'lucide-react';
 import { getSessionEngine, getSessionMap, getSessionRecCanvas } from '../../app/flyoverSession';
 import { ExportCancelledError, isDeterministicExportSupported, recordFlightDeterministic } from '../../export/deterministicExport';
 import { recordFlight } from '../../export/videoExport';
 import { getPrimaryTrack, useProjectStore } from '../../store/useProjectStore';
 import { usePlaybackStore } from '../../store/usePlaybackStore';
+import { SidebarSection } from './SidebarSection';
 
 interface ActionsPanelProps {
   onLoad: () => void;
   hasTracks: boolean;
+}
+
+const ASPECT_SUFFIX: Record<string, string> = { '16:9': '16x9', '9:16': '9x16', '1:1': '1x1' };
+
+// Nome del file scaricato: nome della traccia GPX principale (senza estensione, sanificato) più
+// suffisso del formato scelto — così un export 16:9 e uno 9:16 dello stesso giro non si
+// sovrascrivono a vicenda nella cartella Download. Estensione .webm invariata (è il contenitore
+// prodotto dalla pipeline di registrazione, sia realtime che WebCodecs).
+function exportFileName(primaryFileName: string, aspectRatio: string): string {
+  const base = primaryFileName
+    .replace(/\.gpx$/i, '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const suffix = ASPECT_SUFFIX[aspectRatio] ?? aspectRatio.replace(':', 'x');
+  return `${base || 'giro_flyover'}_${suffix}.webm`;
 }
 
 // Port dei pulsanti 1/2/3 e dell'output di gpx-flyover.html:203-212, 730-818, 1386-1395,
@@ -26,6 +43,7 @@ export function ActionsPanel({ onLoad, hasTracks }: ActionsPanelProps) {
   const trimEndSec = useProjectStore((s) => s.video.trimEndSec);
 
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [downloadName, setDownloadName] = useState('giro_flyover.webm');
   const [exportProgress, setExportProgress] = useState(0);
   const cancelTokenRef = useRef<{ cancelled: boolean } | null>(null);
 
@@ -98,6 +116,7 @@ export function ActionsPanel({ onLoad, hasTracks }: ActionsPanelProps) {
 
       if (videoUrl) URL.revokeObjectURL(videoUrl);
       setVideoUrl(URL.createObjectURL(blob));
+      setDownloadName(exportFileName(primary.fileName, video.aspectRatio));
       setStatusMessage('Video generato! Anteprima qui sotto, poi scaricalo.');
     } catch (err) {
       if (err instanceof ExportCancelledError) {
@@ -158,13 +177,15 @@ export function ActionsPanel({ onLoad, hasTracks }: ActionsPanelProps) {
       {statusMessage && <p className="status-text">{statusMessage}</p>}
 
       {videoUrl && (
-        <>
+        // Collassabile come le altre sezioni: in 9:16/1:1 il player verticale è molto alto e
+        // altrimenti riempirebbe da solo tutta la colonna della sidebar.
+        <SidebarSection title="Anteprima video" icon={Video} defaultOpen>
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
           <video className="video-output" src={videoUrl} controls />
-          <a className="download-link" href={videoUrl} download="giro_flyover.webm">
+          <a className="download-link" href={videoUrl} download={downloadName}>
             <Download size={13} /> Scarica video (.webm)
           </a>
-        </>
+        </SidebarSection>
       )}
     </div>
   );

@@ -1,5 +1,17 @@
 import { useProjectStore } from '../../store/useProjectStore';
+import { outputDimsFor } from '../../export/videoExport';
 import type { VideoAspectRatio, VideoResolution } from '../../types/domain';
+
+// Etichette risoluzione per il selettore: mostrano le dimensioni EFFETTIVE di output per il
+// formato attualmente scelto (es. "1080×1920" per 9:16 con qualità "1080p") — per 9:16 non è un
+// sottoinsieme più piccolo della risoluzione 16:9 corrispondente, ma un canvas verticale dedicato
+// della stessa qualità (vedi outputDimsFor/computeAspectCrop in videoExport.ts).
+function resolutionLabel(resolution: VideoResolution, aspectRatio: VideoAspectRatio): string {
+  const [baseW, baseH] = resolution.split('x').map(Number);
+  const { outW, outH } = outputDimsFor(baseW, baseH, aspectRatio);
+  const tier = baseH === 720 ? '720p (più leggero)' : baseH === 1440 ? '1440p (più pesante)' : '1080p (consigliato)';
+  return `${tier} — ${outW}×${outH}`;
+}
 
 // Port dei controlli video di gpx-flyover.html:97-123.
 export function VideoPanel() {
@@ -15,9 +27,9 @@ export function VideoPanel() {
             value={video.resolution}
             onChange={(e) => updateVideo({ resolution: e.target.value as VideoResolution })}
           >
-            <option value="1280x720">720p (più leggero)</option>
-            <option value="1920x1080">1080p (consigliato)</option>
-            <option value="2560x1440">1440p (più pesante)</option>
+            <option value="1280x720">{resolutionLabel('1280x720', video.aspectRatio)}</option>
+            <option value="1920x1080">{resolutionLabel('1920x1080', video.aspectRatio)}</option>
+            <option value="2560x1440">{resolutionLabel('2560x1440', video.aspectRatio)}</option>
           </select>
         </div>
         <div>
@@ -64,8 +76,9 @@ export function VideoPanel() {
       </div>
       {video.aspectRatio !== '16:9' && (
         <p className="field-hint">
-          La scena viene composta come oggi e poi ritagliata al centro nel formato scelto — sui lati verticali si
-          perde parte dell'inquadratura.
+          Titolo, statistiche e profilo altimetrico usano un layout impilato dedicato a questo formato. La mappa
+          resta ritagliata al centro (si perde parte del contesto ai lati) — la camera zooma leggermente di più per
+          compensare.
         </p>
       )}
       <label>

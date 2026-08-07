@@ -90,8 +90,12 @@ export interface PathPoint {
 
 export type VideoResolution = '1280x720' | '1920x1080' | '2560x1440';
 export type PlaybackSpeed = 0.5 | 1 | 1.5 | 2;
-// Formato di esportazione: la scena viene sempre composta in 16:9 (come oggi) e poi, per i
-// formati social, ritagliata al centro nel formato scelto — nessuna reinquadratura dedicata.
+// Formato di esportazione: la mappa viene sempre composta in un riquadro 16:9 di riferimento e
+// poi ritagliata al centro nel formato scelto (computeAspectCrop, videoExport.ts) — per 9:16/1:1
+// la risoluzione di output non è quella scelta qui (che resta il riferimento di qualità/lato
+// corto), ma quella derivata per il formato: vedi outputDimsFor in videoExport.ts. Titolo, barra
+// statistiche e profilo altimetrico usano un layout impilato dedicato per i formati non 16:9
+// (drawOverlayFrame), non un semplice riposizionamento del layout orizzontale.
 export type VideoAspectRatio = '16:9' | '9:16' | '1:1';
 
 export interface VideoParams {
