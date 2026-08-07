@@ -15,7 +15,7 @@ import type {
   VideoParams,
 } from '../types/domain';
 
-const PROJECT_FILE_VERSION = 3;
+const PROJECT_FILE_VERSION = 4;
 
 // v3 (Fase 2, ancoraggio al percorso): pathFraction sostituisce videoStart come dato salvato per
 // le foto — videoStart resta un campo derivato, non ha senso persisterlo (vedi PhotoClip in
@@ -117,7 +117,42 @@ interface ProjectFileV3 {
   videoClipsMeta: SerializedVideoMeta[];
 }
 
-type ProjectFile = ProjectFileV1 | ProjectFileV2 | ProjectFileV3;
+// v4 (angolo camera): stessa forma di v3 — cambia solo il significato salvato in camera.pitch
+// (prima nella semantica nativa MapLibre, ora 0°=orizzonte/90°=verticale dall'alto, vedi
+// toMapPitch in camera/camera.ts) e i tre nuovi campi bearingMode/fixedBearingDeg/
+// fixedBearingOrbitEnabled — vedi migrateLegacyCamera sotto per la conversione dei file più vecchi.
+interface ProjectFileV4 {
+  version: 4;
+  title: string;
+  segmentMode: SegmentMode;
+  video: VideoParams;
+  camera: CameraParams;
+  map: MapParams;
+  tracksMeta: SerializedTrackMeta[];
+  musicVolume: number;
+  photoDefaultDuration: number;
+  snapEnabled: boolean;
+  musicTracksMeta: SerializedMusicMeta[];
+  photoClips: SerializedPhotoClipV3[];
+  textOverlays: Array<Omit<TextOverlay, 'id'>>;
+  videoClipsMeta: SerializedVideoMeta[];
+}
+
+type ProjectFile = ProjectFileV1 | ProjectFileV2 | ProjectFileV3 | ProjectFileV4;
+
+// File precedenti a v4 salvano camera.pitch nella vecchia semantica nativa MapLibre (0°=verticale
+// dall'alto, max 85°=orizzonte) e non hanno affatto bearingMode/fixedBearing* — li converte alla
+// semantica corrente (0°=orizzonte, 90°=verticale dall'alto) e imposta i default della nuova
+// modalità bearing ('followPath', invariata rispetto al comportamento di quei file).
+function migrateLegacyCamera(camera: CameraParams): CameraParams {
+  return {
+    ...camera,
+    pitch: 90 - camera.pitch,
+    bearingMode: 'followPath',
+    fixedBearingDeg: 0,
+    fixedBearingOrbitEnabled: false,
+  };
+}
 
 function photoToDataUrl(img: HTMLImageElement): string {
   const canvas = document.createElement('canvas');
@@ -143,7 +178,7 @@ function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement> {
 // LORO POSIZIONE è ora pathFraction invece di videoStart (Fase 2, ancoraggio al percorso).
 // Musica/video restano solo metadati, le tracce solo promemoria nome-file/impostazioni Mezzo/
 // principale (vedi ProjectFileV3).
-export function serializeProject(state: ProjectState): ProjectFileV3 {
+export function serializeProject(state: ProjectState): ProjectFileV4 {
   return {
     version: PROJECT_FILE_VERSION,
     title: state.title,
@@ -226,10 +261,11 @@ function migrateLegacyPhotoFractions(
 // Accetta anche file v1/v2 (prima dell'ancoraggio al percorso) per compatibilità.
 export async function deserializeProject(json: unknown): Promise<DeserializedProject> {
   const version = (json as { version?: unknown } | null)?.version;
-  if (!json || typeof json !== 'object' || (version !== 1 && version !== 2 && version !== 3)) {
+  if (!json || typeof json !== 'object' || (version !== 1 && version !== 2 && version !== 3 && version !== 4)) {
     throw new Error('File di progetto non valido o di una versione non supportata.');
   }
   const f = json as ProjectFile;
+  const camera = f.version === 4 ? f.camera : migrateLegacyCamera(f.camera);
 
   const legacyPhotoFractions =
     f.version === 1 || f.version === 2
@@ -242,9 +278,9 @@ export async function deserializeProject(json: unknown): Promise<DeserializedPro
       name: p.name,
       videoStart: 0, // derivato — risincronizzato dallo store subito dopo il caricamento (loadProjectData)
       pathFraction: legacyPhotoFractions ? legacyPhotoFractions[i] : (p as SerializedPhotoClipV3).pathFraction,
-      overlapOfId: f.version === 3 ? (p as SerializedPhotoClipV3).overlapOfId : undefined,
-      overlapOfKind: f.version === 3 ? (p as SerializedPhotoClipV3).overlapOfKind : undefined,
-      overlapOffsetSec: f.version === 3 ? (p as SerializedPhotoClipV3).overlapOffsetSec : undefined,
+      overlapOfId: f.version >= 3 ? (p as SerializedPhotoClipV3).overlapOfId : undefined,
+      overlapOfKind: f.version >= 3 ? (p as SerializedPhotoClipV3).overlapOfKind : undefined,
+      overlapOffsetSec: f.version >= 3 ? (p as SerializedPhotoClipV3).overlapOffsetSec : undefined,
       duration: p.duration,
       rotation: p.rotation,
       img: await loadImageFromDataUrl(p.dataUrl),
@@ -265,7 +301,7 @@ export async function deserializeProject(json: unknown): Promise<DeserializedPro
       title: f.title,
       segmentMode: f.segmentMode,
       video: f.video,
-      camera: f.camera,
+      camera,
       map: f.map,
       musicVolume: f.musicVolume,
       photoDefaultDuration: f.photoDefaultDuration,
@@ -277,6 +313,6 @@ export async function deserializeProject(json: unknown): Promise<DeserializedPro
     },
     tracksMeta,
     musicMeta: f.musicTracksMeta ?? [],
-    videoMeta: f.version === 2 || f.version === 3 ? (f.videoClipsMeta ?? []) : [],
+    videoMeta: f.version === 2 || f.version === 3 || f.version === 4 ? (f.videoClipsMeta ?? []) : [],
   };
 }

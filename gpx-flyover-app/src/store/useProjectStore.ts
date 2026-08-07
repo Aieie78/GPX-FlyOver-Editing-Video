@@ -159,7 +159,15 @@ const initialState: ProjectState = {
     trimEndSec: null,
     showAltitudeProfile: true,
   },
-  camera: { pitch: 66, zoom: 12.5, orbitAmp: 25, orbitPeriod: 14 },
+  camera: {
+    pitch: 24,
+    zoom: 12.5,
+    orbitAmp: 25,
+    orbitPeriod: 14,
+    bearingMode: 'followPath',
+    fixedBearingDeg: 0,
+    fixedBearingOrbitEnabled: false,
+  },
   map: {
     maptilerToken: 'FyCTckIX29KYsBltxupY',
     styleId: 'hybrid-v4',

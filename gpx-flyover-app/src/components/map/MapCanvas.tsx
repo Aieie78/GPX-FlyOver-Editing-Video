@@ -2,6 +2,7 @@ import { MapLibreMap, type ErrorEvent } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useRef } from 'react';
 import { setSessionEngine, setSessionMap, setSessionRecCanvas } from '../../app/flyoverSession';
+import { toMapPitch } from '../../camera/camera';
 import { setRouteColor, setupRouteLayers, setupTerrain, styleUrlFor } from '../../map/mapSetup';
 import { PreviewEngine } from '../../preview/PreviewEngine';
 import { useProjectStore } from '../../store/useProjectStore';
@@ -51,8 +52,8 @@ export function MapCanvas() {
       style: styleUrl,
       center: [primary.track.pts[0].lon, primary.track.pts[0].lat],
       zoom: camera.zoom,
-      pitch: camera.pitch,
-      bearing: 0,
+      pitch: toMapPitch(camera.pitch),
+      bearing: camera.bearingMode === 'fixed' ? camera.fixedBearingDeg : 0,
       maxPitch: 85,
       // preserveDrawingBuffer è necessario per catturare i frame dal canvas in registrazione
       canvasContextAttributes: { antialias: true, preserveDrawingBuffer: true },

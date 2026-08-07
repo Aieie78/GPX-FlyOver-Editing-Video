@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { CAMERA_PRESETS } from '../../camera/cameraPresets';
 import { useProjectStore } from '../../store/useProjectStore';
+import type { CameraParams } from '../../types/domain';
 
 // Port dei controlli camera di gpx-flyover.html:125-145, con l'aggiunta di preset pronti
 // (CAMERA_PRESETS) per partire da un'inquadratura sensata senza tarare i 4 parametri a mano.
@@ -37,11 +38,11 @@ export function CameraPanel() {
       </select>
       <div className="row">
         <div>
-          <label>Pitch (°)</label>
+          <label>Pitch (° dall'orizzonte)</label>
           <input
             type="number"
             min={0}
-            max={85}
+            max={90}
             value={camera.pitch}
             onChange={(e) => updateCamera({ pitch: parseFloat(e.target.value) || 0 })}
           />
@@ -63,8 +64,6 @@ export function CameraPanel() {
           <label>Ampiezza rotazione (°)</label>
           <input
             type="number"
-            min={0}
-            max={60}
             value={camera.orbitAmp}
             onChange={(e) => updateCamera({ orbitAmp: parseFloat(e.target.value) || 0 })}
           />
@@ -73,13 +72,43 @@ export function CameraPanel() {
           <label>Periodo rotazione (s)</label>
           <input
             type="number"
-            min={4}
-            max={60}
             value={camera.orbitPeriod}
             onChange={(e) => updateCamera({ orbitPeriod: parseFloat(e.target.value) || 14 })}
           />
         </div>
       </div>
+      <label>Direzione camera</label>
+      <select
+        value={camera.bearingMode}
+        onChange={(e) => updateCamera({ bearingMode: e.target.value as CameraParams['bearingMode'] })}
+      >
+        <option value="followPath">Segui il percorso</option>
+        <option value="fixed">Angolo fisso rispetto al nord</option>
+      </select>
+      {camera.bearingMode === 'fixed' && (
+        <div className="row">
+          <div>
+            <label>Angolo dal nord (°)</label>
+            <input
+              type="number"
+              min={0}
+              max={360}
+              value={camera.fixedBearingDeg}
+              onChange={(e) => updateCamera({ fixedBearingDeg: parseFloat(e.target.value) || 0 })}
+            />
+          </div>
+          <div>
+            <label>
+              <input
+                type="checkbox"
+                checked={camera.fixedBearingOrbitEnabled}
+                onChange={(e) => updateCamera({ fixedBearingOrbitEnabled: e.target.checked })}
+              />
+              {' '}Ruota nel tempo
+            </label>
+          </div>
+        </div>
+      )}
     </>
   );
 }

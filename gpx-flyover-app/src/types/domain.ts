@@ -113,11 +113,26 @@ export interface VideoParams {
   showAltitudeProfile: boolean; // sagoma del profilo altimetrico in alto a destra (anteprima e export)
 }
 
+// 'followPath': la camera insegue la direzione del percorso (comportamento storico, filtro
+// passa-basso sul bearing calcolato dal tracciato). 'fixed': la camera parte sempre dall'angolo
+// impostato dall'utente (fixedBearingDeg) rispetto al nord, invariante rispetto al percorso.
+export type BearingMode = 'followPath' | 'fixed';
+
 export interface CameraParams {
+  // Angolo camera rispetto all'orizzonte: 0° = vista all'orizzonte, 90° = vista verticale
+  // dall'alto (nadir). Convertito nel pitch nativo di MapLibre (0=nadir, max 85=orizzonte) da
+  // toMapPitch in camera.ts prima di essere passato alla mappa.
   pitch: number;
   zoom: number;
   orbitAmp: number;
   orbitPeriod: number;
+  bearingMode: BearingMode;
+  // Angolo di partenza rispetto al nord (0..360), usato solo se bearingMode === 'fixed'.
+  fixedBearingDeg: number;
+  // Se true (solo in modalità 'fixed'), sopra fixedBearingDeg si applica comunque l'oscillazione
+  // orbitAmp/orbitPeriod nel tempo; se false la camera resta ferma su fixedBearingDeg per tutto
+  // il video.
+  fixedBearingOrbitEnabled: boolean;
 }
 
 export type MapStyleId = 'hybrid-v4' | 'satellite-v2' | 'outdoor-v2' | 'winter-v2';
@@ -247,10 +262,13 @@ export interface VideoClip extends Partial<OverlapAnchor> {
 export interface AnimParams {
   duration: number;
   fps: number;
-  pitch: number;
+  pitch: number; // già convertito in pitch nativo MapLibre (vedi toMapPitch in camera.ts)
   zoom: number;
   orbitAmp: number;
   orbitPeriod: number;
+  bearingMode: BearingMode;
+  fixedBearingDeg: number;
+  fixedBearingOrbitEnabled: boolean;
   totalFrames: number;
   path: PathPoint[];
   title: string;
